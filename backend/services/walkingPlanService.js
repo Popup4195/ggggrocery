@@ -1,0 +1,370 @@
+// walkingPlanService.js — FR07 步行/公共交通模式
+// this is for users without a car, no fuel cost needed
+// 算法比分支定界简单多了，不用算油费
+// 1. 找各品牌最近的分店
+// 2. 扔掉太远的（默认 2km 以内）
+// 3. 查价格，算总价
+// 4. 按总价从低到高排序
+// 5. 支持一站式 + 两店方案（最多 2 家，走太多家提不动菜）
+
+const Branch = require('../models/Branch');
+const PriceSnapshot = require('../models/PriceSnapshot');
+const { getDistances } = require('./distanceService');
+
+// 默认步行上限（公里），用户可以在 slider 里调
+const DEFAULT_WALKING_MAX_KM = 2.0;
+// 平均步行速度，用来估算步行时间
+const WALKING_SPEED_KMH = 5;
+
+// ================================================================
+// HELPER: estimate walking time in minutes
+// 距离 (km) / 速度 (km/h) * 60
+// ================================================================
+function estimateWalkingTime(distanceKm) {
+    return Math.round((distanceKm / WALKING_SPEED_KMH) * 60);
+}
+
+// ================================================================
+// 主函数: generate walking shopping plans
+//
+// 参数:
+//   items: [{ name, quantity }]
+//   supermarkets: [chainId, ...]
+//   userLat, userLng: 用户坐标
+//   walkingMaxKm: 步行上限，默认 2km
+// ================================================================
+async function generateWalkingPlans({ items, supermarkets, userLat, userLng, walkingMaxKm }) {
+    const maxKm = walkingMaxKm || DEFAULT_WALKING_MAX_KM;
+
+    // ==================== PHASE 1: 找步行可达的分店 ====================
+
+    // 对每个选中品牌，找最近的分店 + 算距离
+    const reachableBranches = {};  // chainId -> { branchInfo, distance }
+
+    for (const chainId of supermarkets) {
+        const branches = await Branch.find({
+            chainId: chainId,
+            type: 'supermarket',
+            isActive: true
+        });
+
+        if (branches.length === 0) continue;
+
+        // 算用户到每个分店的距离，直接用 distanceService 的 haversine
+        const distances = await getDistances(
+            userLat,
+            userLng,
+            branches.map(b => ({
+                branchId: b.branchId,
+                latitude: b.latitude,
+                longitude: b.longitude
+            }))
+        );
+
+        // 找距离最近的那个分店
+        let minDist = Infinity;
+        let closestBranch = null;
+
+        distances.forEach(d => {
+            if (d.distanceKm < minDist) {
+                const branch = branches.find(b => b.branchId === d.branchId);
+                if (branch) {
+                    minDist = d.distanceKm;
+                    closestBranch = branch;
+                }
+            }
+        });
+
+        // 只有步行范围内的才保留，太远的直接扔掉
+        if (closestBranch && minDist <= maxKm) {
+            reachableBranches[chainId] = {
+                branchId: closestBranch.branchId,
+                branchName: closestBranch.name,
+                chainId: chainId,
+                address: closestBranch.address,
+                latitude: closestBranch.latitude,
+                longitude: closestBranch.longitude,
+                distance: Math.round(minDist * 100) / 100
+            };
+        }
+    }
+
+    // 如果一家步行可达的超市都没有，给用户一个友好的提示
+    const availableChains = Object.keys(reachableBranches);
+    if (availableChains.length === 0) {
+        return {
+            plans: [],
+            message: `No supermarket is within ${maxKm} km walking distance from your location. Try increasing the distance limit or consider driving.`
+        };
+    }
+
+    // ==================== PHASE 2: 预加载价格 ====================
+
+    // 先建个空的 priceMap，省得后面反复查数据库
+    const priceMap = {};
+    for (const chainId of availableChains) {
+        priceMap[chainId] = {};
+    }
+
+    const productNames = items.map(item => item.name.toLowerCase());
+    const allPrices = await PriceSnapshot.find({
+        productName: { $in: productNames },
+        chainId: { $in: availableChains }
+    });
+
+    // 把价格填进 priceMap
+    allPrices.forEach(doc => {
+        if (!priceMap[doc.chainId]) priceMap[doc.chainId] = {};
+        if (doc.unitPrice !== null) {
+            priceMap[doc.chainId][doc.productName] = doc.unitPrice;
+        }
+    });
+
+    // ==================== PHASE 3: 生成方案 ====================
+
+    const allPlans = [];
+    const plansSet = new Set();  // dedup，防止重复方案
+
+    // ---- PLAN TYPE A: 一站式方案（全部在一家店买） ----
+    for (const chainId of availableChains) {
+        const branchInfo = reachableBranches[chainId];
+        let groceryTotal = 0;
+        let hasMissing = false;
+        const breakdown = [];
+
+        for (const item of items) {
+            const name = item.name.toLowerCase();
+            const unitPrice = priceMap[chainId]?.[name];
+
+            if (unitPrice !== undefined && unitPrice !== null) {
+                const total = Math.round(unitPrice * item.quantity * 100) / 100;
+                groceryTotal += total;
+                breakdown.push({
+                    name: item.name,
+                    quantity: item.quantity,
+                    unitPrice: unitPrice,
+                    total: total,
+                    store: chainId
+                });
+            } else {
+                hasMissing = true;  // 查不到价格，标记一下
+            }
+        }
+
+        groceryTotal = Math.round(groceryTotal * 100) / 100;
+
+        // 步行距离: 家 → 店 → 家（往返）
+        const roundTripKm = Math.round(branchInfo.distance * 2 * 100) / 100;
+        const walkingTime = estimateWalkingTime(branchInfo.distance); // 单程时间，不是往返
+
+        const planKey = `single-${chainId}-${groceryTotal.toFixed(2)}`;
+        if (!plansSet.has(planKey)) {
+            plansSet.add(planKey);
+            allPlans.push({
+                strategy: 'single',
+                transportMode: 'walking',
+                groceryTotal: groceryTotal,
+                // 步行没有 fuel cost，所以 trueCost = groceryTotal
+                trueCost: groceryTotal,
+                stores: [{
+                    chainId: chainId,
+                    branchId: branchInfo.branchId,
+                    branchName: branchInfo.branchName,
+                    address: branchInfo.address,
+                    distance: branchInfo.distance,
+                    walkingTimeMin: walkingTime
+                }],
+                walkingDistance: branchInfo.distance,
+                roundTripWalkingKm: roundTripKm,
+                roundTripWalkingTimeMin: estimateWalkingTime(roundTripKm),
+                hasMissingPrice: hasMissing,
+                breakdown: breakdown,
+                storeCount: 1
+            });
+        }
+    }
+
+    // ---- PLAN TYPE B: 两店方案 ----
+    // only available if at least 2 chains are reachable
+    // 逻辑: A 店买一部分，B 店买另一部分，按价格差分配
+    // 这样用户可以去两家比较近的店分别买不同的东西
+    if (availableChains.length >= 2 && items.length >= 2) {
+        for (let i = 0; i < availableChains.length; i++) {
+            for (let j = i + 1; j < availableChains.length; j++) {
+                const chainA = availableChains[i];
+                const chainB = availableChains[j];
+                const branchA = reachableBranches[chainA];
+                const branchB = reachableBranches[chainB];
+
+                // 两店都要在步行范围内
+                // 不试所有排列组合，只试一种合理的分配:
+                //   - 差价大的商品去便宜的店买
+                //   - 差价小的留在另一家
+
+                // 先算每个商品在 A 和 B 的差价
+                const priceDiffs = [];
+                for (const item of items) {
+                    const name = item.name.toLowerCase();
+                    const priceA = priceMap[chainA]?.[name];
+                    const priceB = priceMap[chainB]?.[name];
+
+                    if (priceA !== undefined && priceA !== null && priceB !== undefined && priceB !== null) {
+                        priceDiffs.push({
+                            name: item.name,
+                            quantity: item.quantity,
+                            priceA: priceA,
+                            priceB: priceB,
+                            diff: priceA - priceB // 正数 = B 比较便宜
+                        });
+                    }
+                }
+
+                // 如果有些商品两家都没有，直接跳过这个组合
+                if (priceDiffs.length === 0) continue;
+
+                // 按差价排序: B 比 A 便宜最多的排最前面
+                // 前半去 B 买，后半留 A 买
+                priceDiffs.sort((a, b) => b.diff - a.diff);
+
+                const splitPoint = Math.ceil(priceDiffs.length / 2);
+                const itemsInB = priceDiffs.slice(0, splitPoint);
+                const itemsInA = priceDiffs.slice(splitPoint);
+
+                // 算两家店各自的杂货总价
+                let totalA = 0;
+                let totalB = 0;
+                const breakdownA = [];
+                const breakdownB = [];
+
+                for (const item of itemsInA) {
+                    const total = Math.round(item.priceA * item.quantity * 100) / 100;
+                    totalA += total;
+                    breakdownA.push({
+                        name: item.name,
+                        quantity: item.quantity,
+                        unitPrice: item.priceA,
+                        total: total,
+                        store: chainA
+                    });
+                }
+
+                for (const item of itemsInB) {
+                    const total = Math.round(item.priceB * item.quantity * 100) / 100;
+                    totalB += total;
+                    breakdownB.push({
+                        name: item.name,
+                        quantity: item.quantity,
+                        unitPrice: item.priceB,
+                        total: total,
+                        store: chainB
+                    });
+                }
+
+                const groceryTotal = Math.round((totalA + totalB) * 100) / 100;
+
+                // 步行路线: 家 → 近的那个 → 远的那个 → 家
+                // 按距离排序，先近后远
+                let routeDistance;
+                let store1, store2;
+                if (branchA.distance <= branchB.distance) {
+                    // route: home → A → B → home
+                    const distAtoB = Math.sqrt(
+                        Math.pow((branchA.latitude - branchB.latitude) * 111, 2) +
+                        Math.pow((branchA.longitude - branchB.longitude) * 111 * Math.cos((branchA.latitude + branchB.latitude) / 2 * Math.PI / 180), 2)
+                    );
+                    routeDistance = Math.round((branchA.distance + distAtoB + branchB.distance) * 100) / 100;
+                    store1 = {
+                        chainId: chainA,
+                        branchId: branchA.branchId,
+                        branchName: branchA.branchName,
+                        address: branchA.address,
+                        distance: branchA.distance,
+                        walkingTimeMin: estimateWalkingTime(branchA.distance),
+                        items: itemsInA.map(i => ({ name: i.name, quantity: i.quantity }))
+                    };
+                    store2 = {
+                        chainId: chainB,
+                        branchId: branchB.branchId,
+                        branchName: branchB.branchName,
+                        address: branchB.address,
+                        distance: branchB.distance,
+                        walkingTimeMin: estimateWalkingTime(branchB.distance),
+                        items: itemsInB.map(i => ({ name: i.name, quantity: i.quantity }))
+                    };
+                } else {
+                    // route: home → B → A → home
+                    const distBtoA = Math.sqrt(
+                        Math.pow((branchB.latitude - branchA.latitude) * 111, 2) +
+                        Math.pow((branchB.longitude - branchA.longitude) * 111 * Math.cos((branchB.latitude + branchA.latitude) / 2 * Math.PI / 180), 2)
+                    );
+                    routeDistance = Math.round((branchB.distance + distBtoA + branchA.distance) * 100) / 100;
+                    store1 = {
+                        chainId: chainB,
+                        branchId: branchB.branchId,
+                        branchName: branchB.branchName,
+                        address: branchB.address,
+                        distance: branchB.distance,
+                        walkingTimeMin: estimateWalkingTime(branchB.distance),
+                        items: itemsInB.map(i => ({ name: i.name, quantity: i.quantity }))
+                    };
+                    store2 = {
+                        chainId: chainA,
+                        branchId: branchA.branchId,
+                        branchName: branchA.branchName,
+                        address: branchA.address,
+                        distance: branchA.distance,
+                        walkingTimeMin: estimateWalkingTime(branchA.distance),
+                        items: itemsInA.map(i => ({ name: i.name, quantity: i.quantity }))
+                    };
+                }
+
+                const planKey = `split-${chainA}-${chainB}-${groceryTotal.toFixed(2)}`;
+                if (!plansSet.has(planKey)) {
+                    plansSet.add(planKey);
+                    allPlans.push({
+                        strategy: 'split',
+                        transportMode: 'walking',
+                        groceryTotal: groceryTotal,
+                        trueCost: groceryTotal,
+                        stores: [store1, store2],
+                        walkingDistance: routeDistance,
+                        roundTripWalkingKm: routeDistance,
+                        roundTripWalkingTimeMin: estimateWalkingTime(routeDistance),
+                        hasMissingPrice: false,
+                        breakdown: [...breakdownA, ...breakdownB],
+                        storeCount: 2
+                    });
+                }
+            }
+        }
+    }
+
+    // ==================== PHASE 4: 排序 + 返回 ====================
+
+    // 按总价从低到高排
+    allPlans.sort((a, b) => a.groceryTotal - b.groceryTotal);
+
+    // 去重，一样的方案只保留一个（相同 strategy + chain 组合 + 总价）
+    const uniquePlans = [];
+    const seenKeys = new Set();
+    for (const plan of allPlans) {
+        const key = `${plan.strategy}-${plan.stores.map(s => s.chainId).sort().join(',')}-${plan.groceryTotal.toFixed(2)}`;
+        if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            uniquePlans.push(plan);
+        }
+    }
+
+    // 分配排名，从 1 开始
+    uniquePlans.forEach((plan, index) => {
+        plan.rank = index + 1;
+    });
+
+    return {
+        plans: uniquePlans.slice(0, 10), // 最多返回 10 个方案
+        message: null
+    };
+}
+
+module.exports = { generateWalkingPlans };
+
