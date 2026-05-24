@@ -2,6 +2,7 @@ import { useState, useEffect, Fragment } from 'react'
 import ComparisonDashboard from './components/ComparisonDashboard'
 import ExportHandler from './components/ExportHandler'
 import { TrueCostChart, CostBreakdownChart, WalkingDistanceChart } from './components/VisualizationHelper'
+import SummaryStats from './components/SummaryStats'
 
 
 function App() {
@@ -501,6 +502,7 @@ function App() {
 
           {/* FR09: Export toolbar */}
           <ExportHandler plans={plans} />
+          <SummaryStats plans={plans} />
 
           {/* FR09: Charts */}
           <TrueCostChart plans={plans} />
