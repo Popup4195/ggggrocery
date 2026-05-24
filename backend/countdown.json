@@ -1,58 +1,58 @@
 {
     "Bread": {
-        "price": 3.00,
+        "price": 2.80,
         "unit": "600g loaf",
         "baseUnit": "loaf",
-        "unitPrice": 3.00,
+        "unitPrice": 2.80,
         "category": "bakery"
     },
     "Eggs": {
-        "price": 6.50,
+        "price": 6.80,
         "unit": "12pcs",
         "baseUnit": "pc",
-        "unitPrice": 0.54,
+        "unitPrice": 0.57,
         "category": "piece"
     },
     "Milk": {
-        "price": 3.80,
+        "price": 3.70,
         "unit": "2L",
         "baseUnit": "L",
-        "unitPrice": 1.90,
+        "unitPrice": 1.85,
         "category": "liquid"
     },
     "Butter": {
-        "price": 5.50,
+        "price": 5.40,
         "unit": "500g",
         "baseUnit": "100g",
-        "unitPrice": 1.10,
+        "unitPrice": 1.08,
         "category": "block"
     },
     "Cheese": {
-        "price": 7.50,
+        "price": 7.80,
         "unit": "1kg",
         "baseUnit": "100g",
-        "unitPrice": 0.75,
+        "unitPrice": 0.78,
         "category": "block"
     },
     "Chicken": {
-        "price": 13.00,
+        "price": 12.80,
         "unit": "1kg",
         "baseUnit": "kg",
-        "unitPrice": 13.00,
+        "unitPrice": 12.80,
         "category": "bulk"
     },
     "Rice": {
-        "price": 3.80,
+        "price": 3.90,
         "unit": "1kg",
         "baseUnit": "kg",
-        "unitPrice": 3.80,
+        "unitPrice": 3.90,
         "category": "bulk"
     },
     "Apples": {
-        "price": 3.20,
+        "price": 3.30,
         "unit": "1kg",
         "baseUnit": "kg",
-        "unitPrice": 3.20,
+        "unitPrice": 3.30,
         "category": "bulk"
     }
 }

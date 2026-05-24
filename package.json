@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.4.2",
+    "dotenv": "^17.4.2",
+    "mongoose": "^9.6.2"
+  }
+}
+
