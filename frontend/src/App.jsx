@@ -40,14 +40,14 @@ function App() {
     const fetchData = async () => {
       try {
         // Fetch supermarket chains
-        const chainsRes = await fetch('http://localhost:3000/api/chains?type=supermarket')
+        const chainsRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/chains?type=supermarket`)
         const chainsData = await chainsRes.json()
         setChains(chainsData)
         setSelectedChains(chainsData.map(c => c.chainId))
 
         // Fetch branches for supermarket chains in parallel
         const branchPromises = chainsData.map(chain =>
-          fetch(`http://localhost:3000/api/branches?chainId=${chain.chainId}`)
+          fetch(`${import.meta.env.VITE_API_BASE_URL}/api/branches?chainId=${chain.chainId}`)
             .then(res => res.json())
             .then(branches => ({ chainId: chain.chainId, branches }))
         )
@@ -59,7 +59,7 @@ function App() {
         setBranchesByChain(branchesMap)
 
         // Fetch product catalog for auto-complete
-        const productsRes = await fetch('http://localhost:3000/api/products')
+        const productsRes = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/products`)
         const productsData = await productsRes.json()
         setProductCatalog(productsData)
       } catch (err) {
@@ -97,7 +97,7 @@ function App() {
       newSelected = [...selectedChains, chainId]
       if (!branchesByChain[chainId]) {
         try {
-          const res = await fetch(`http://localhost:3000/api/branches?chainId=${chainId}`)
+          const res = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/branches?chainId=${chainId}`)
           const data = await res.json()
           setBranchesByChain(prev => ({ ...prev, [chainId]: data }))
         } catch (err) {
@@ -185,7 +185,7 @@ function App() {
 
       }
 
-      const response = await fetch('http://localhost:3000/api/plans', {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/plans`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -241,8 +241,8 @@ function App() {
   // RENDER
   // ================================================================
   return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '1200px', margin: '0 auto' }}>
-      <h1 style={{ marginBottom: '24px', wordBreak: 'keep-all', lineHeight: 1.4 }}>🛒 Grocery Saver — Smart Shopping Plans</h1>
+    <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '1200px', margin: '0 auto', minWidth: 0 }}>
+      <h1 style={{ marginBottom: '24px', lineHeight: 1.4 }}>🛒 Grocery Saver — Smart Shopping Plans</h1>
 
 
       {/* ============================================================ */}
@@ -251,13 +251,15 @@ function App() {
       <section style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '8px', padding: '16px' }}>
         <h2 style={{ marginTop: 0 }}> Your Grocery List</h2>
         {items.map((item, index) => (
-          <div key={index} style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div key={index} style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px',
+          flexWrap: 'wrap'
+          }}>
             <input
               type="text"
               value={item.name}
               onChange={(e) => updateItemName(index, e.target.value)}
               placeholder="Item name"
-              style={{ width: '200px', padding: '5px' }}
+              style={{ flex: '1 1 140px', minWidth:0, padding: '5px' }}
             />
             <input
               type="number"
@@ -265,10 +267,18 @@ function App() {
               value={item.quantity}
               onChange={(e) => {
                 const newItems = [...items]
-                newItems[index].quantity = parseInt(e.target.value) || 1
+                const val = e.target.value
+                newItems[index].quantity = val === '' ? '' : parseInt(val) || item.quantity
                 setItems(newItems)
               }}
-              style={{ width: '60px', padding: '5px' }}
+              onBlur={(e) => {
+                if (e.target.value === '' || parseInt(e.target.value) < 1) {
+                  const newItems = [...items]
+                  newItems[index].quantity = 1
+                  setItems(newItems)
+                }
+              }}
+              style={{ width: '60px', flexShrink:0 ,padding: '5px' }}
             />
             <span style={{ minWidth: '60px', fontSize: '0.9em', color: '#555' }}>
               {item.baseUnit || ''}
@@ -524,7 +534,9 @@ function App() {
               }}
             >
               {/* Plan header with rank */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              flexWrap: 'wrap',gap:'9px'
+              }}>
                 <h3 style={{ margin: 0, fontSize: '1.2em' }}>
                   {getRankIcon(plan.rank)} {getStrategyLabel(plan)}
                   {plan.rank === 1 && (
@@ -645,7 +657,7 @@ function App() {
 
               {/* Item breakdown table */}
               {plan.breakdown && plan.breakdown.length > 0 && (
-                <div style={{ marginTop: '12px' }}>
+                <div style={{ overflowX:'auto',marginTop: '12px' }}>
                   <details>
                     <summary style={{ cursor: 'pointer', fontSize: '0.9em', color: '#007bff' }}>
                        View item breakdown
