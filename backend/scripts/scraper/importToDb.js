@@ -125,7 +125,12 @@ async function main() {
     await mongoose.disconnect();
 }
 
-main().catch((err) => {
-    console.error('导入失败:', err.message);
-    process.exit(1);
-});
+// 命令行直接跑：node importToDb.js <json文件路径>
+if (require.main === module) {
+    main().catch((err) => {
+        console.error('导入失败:', err.message);
+        process.exit(1);
+    });
+}
+
+module.exports = { importFile };

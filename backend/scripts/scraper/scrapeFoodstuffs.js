@@ -15,6 +15,16 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+/**
+ * 随机等待一段时间（在 minMs ~ maxMs 之间随机取值），而不是固定死一个数字。
+ * 固定不变的间隔本身就是一个很容易被识别成"这是脚本不是人"的特征，
+ * 随机波动更接近真人翻页的节奏。
+ */
+function randomDelay(minMs, maxMs) {
+  const ms = minMs + Math.random() * (maxMs - minMs);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const CHAINS = {
   newworld: {
     baseUrl: 'https://www.newworld.co.nz',
@@ -226,8 +236,9 @@ async function scrapeAllPages(chainKey, baseCategoryUrl, maxPages = 50, category
         const is429 = err.message && err.message.includes('429');
         if (is429 && retriesLeft > 0) {
           retriesLeft--;
-          console.log(`第 ${page} 页被限速(429)，等待 30 秒后重试（剩余重试次数: ${retriesLeft}）...`);
-          await new Promise((resolve) => setTimeout(resolve, 30000));
+          const waitSeconds = Math.round((90000 + Math.random() * 90000) / 1000);
+          console.log(`第 ${page} 页被限速(429)，等待约 ${waitSeconds} 秒后重试（剩余重试次数: ${retriesLeft}）...`);
+          await randomDelay(90000, 180000); // 90-180 秒随机，比之前的固定30秒更保守
           continue;
         }
         console.error(`第 ${page} 页抓取失败，停止翻页: ${err.message}`);
@@ -241,7 +252,7 @@ async function scrapeAllPages(chainKey, baseCategoryUrl, maxPages = 50, category
     console.log(`第 ${page} 页抓到 ${pageProducts.length} 个商品`);
     all.push(...pageProducts);
     if (page < maxPages) {
-      await new Promise((resolve) => setTimeout(resolve, 2000)); // 每页之间歇 2 秒
+      await randomDelay(3000, 7000); // 每页之间随机歇 3-7 秒，不用固定数字
     }
   }
   return all;
@@ -289,8 +300,8 @@ async function scrapeMultipleCategories(chainKey, categoryUrls, useAllPages = tr
         ? await scrapeAllPages(chainKey, url, 50, label)
         : await scrapeCategoryPage(chainKey, url, label);
     all.push(...products);
-    // 换分类之间也歇一下，别对网站发太密集的请求
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // 换分类之间也歇一下，别对网站发太密集的请求（随机 5-12 秒）
+    await randomDelay(5000, 12000);
   }
   // 按 productId+unit 去重（不同分类页面之间可能重复出现同一个商品）
   const seen = new Set();

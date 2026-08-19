@@ -43,11 +43,14 @@ const BASE_URLS = {
     paknsave: 'https://www.paknsave.co.nz',
 };
 
-async function main() {
-    const chainKey = process.argv[2];
+/**
+ * 跑一个超市牌子的完整批量抓取（7个大类，带日期轮换），存成 JSON 文件。
+ * 拆成独立函数是为了能被"每日自动刷新"的编排脚本调用，
+ * 不再只能靠命令行手动跑。
+ */
+async function runBatchForChain(chainKey) {
     if (!chainKey || !BASE_URLS[chainKey]) {
-        console.error('用法: node runBatch.js <newworld|paknsave>');
-        process.exit(1);
+        throw new Error('chainKey 必须是 newworld 或 paknsave');
     }
 
     const orderedCategories = rotateByDate(CATEGORIES);
@@ -65,9 +68,21 @@ async function main() {
     console.log(`\n========================================`);
     console.log(`共抓到 ${products.length} 个商品，已存到 ${outFile}`);
     console.log(`========================================`);
+
+    return { chainKey, outFile, count: products.length };
 }
 
-main().catch((err) => {
-    console.error('批量抓取失败:', err.message);
-    process.exit(1);
-});
+// 命令行直接跑：node runBatch.js paknsave
+if (require.main === module) {
+    const chainKey = process.argv[2];
+    if (!chainKey || !BASE_URLS[chainKey]) {
+        console.error('用法: node runBatch.js <newworld|paknsave>');
+        process.exit(1);
+    }
+    runBatchForChain(chainKey).catch((err) => {
+        console.error('批量抓取失败:', err.message);
+        process.exit(1);
+    });
+}
+
+module.exports = { runBatchForChain, CATEGORIES, rotateByDate };
