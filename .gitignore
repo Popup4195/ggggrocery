@@ -81,4 +81,4 @@ typings/
 
 .idea
 
-backend/scripts/scraper/*.json
+backend/scripts/scraper/**/*.json
