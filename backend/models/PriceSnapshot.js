@@ -29,6 +29,10 @@ const priceSnapshotSchema = new mongoose.Schema({
         type: Number,
         default: null
     },
+    imageUrl: {
+        type: String,
+        default: null
+    },
     category: {
         type: String,
         default: ''

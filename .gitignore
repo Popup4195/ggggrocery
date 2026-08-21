@@ -80,3 +80,5 @@ typings/
 .dynamodb/ 
 
 .idea
+
+backend/scripts/scraper/**/*.json

@@ -15,6 +15,7 @@ const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
 const { getGroceryTotal } = require('./trueCostService');
+const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
 
 // 默认值，跟 fr17 保持一致
 const DEFAULT_FUEL_EFFICIENCY = 10; // km/L, 新西兰平均油耗
@@ -91,7 +92,7 @@ async function findBestFuelStation(userLat, userLng, fuelType) {
     });
 
     if (fuelStations.length === 0) {
-    // 数据库里没有加油站数据，用默认油价
+        // 数据库里没有加油站数据，用默认油价
 
         return {
             branchId: null,
@@ -270,25 +271,25 @@ function getPermutations(arr) {
 // 注意：这个函数写了但没调用，最下价是在主函数里内联算的
 // ================================================================
 async function getCheapestPrices(items, supermarkets) {
-    const productNames = items.map(item => item.name.toLowerCase());
-
-    // 查所有选中连锁里这些商品的价格
-
-    const priceDocs = await PriceSnapshot.find({
-        productName: { $in: productNames },
-        chainId: { $in: supermarkets }
-    });
-
-    // 对每个商品，在所有连锁里找最便宜的单价
+    // 用包含匹配而不是精确匹配（跟主函数 generatePlans 里的逻辑保持一致，
+    // 避免这个函数以后被重新启用时又踩一遍"爬虫具体商品名 vs 用户简单输入"匹配不上的坑）
+    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    const priceDocs = orConditions.length > 0
+        ? await PriceSnapshot.find({ $or: orConditions, chainId: { $in: supermarkets } }).lean()
+        : [];
 
     const cheapestMap = {};
-    priceDocs.forEach(doc => {
-        if (doc.unitPrice !== null) {
-            if (!cheapestMap[doc.productName] || doc.unitPrice < cheapestMap[doc.productName]) {
-                cheapestMap[doc.productName] = doc.unitPrice;
+    for (const item of items) {
+        const name = item.name.toLowerCase().trim();
+        let cheapest = Infinity;
+        for (const chainId of supermarkets) {
+            const best = pickBestMatch(findCandidates(priceDocs, item.name, chainId), item.name);
+            if (best && best.unitPrice !== null && best.unitPrice < cheapest) {
+                cheapest = best.unitPrice;
             }
         }
-    });
+        if (cheapest !== Infinity) cheapestMap[name] = cheapest;
+    }
 
     return cheapestMap;
 }
@@ -299,15 +300,13 @@ async function getCheapestPrices(items, supermarkets) {
 // 注意：这个函数写了但没调用，priceMap 预加载覆盖了
 // ================================================================
 async function getItemPrice(itemName, chainId) {
-    const doc = await PriceSnapshot.findOne({
-        productName: itemName.toLowerCase(),
+    const docs = await PriceSnapshot.find({
+        productName: { $regex: itemName.toLowerCase().trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' },
         chainId: chainId
-    });
+    }).lean();
 
-    if (doc && doc.unitPrice !== null) {
-        return doc.unitPrice;
-    }
-    return null; // 查不到价格
+    const best = pickBestMatch(findCandidates(docs, itemName, chainId), itemName);
+    return best ? best.unitPrice : null; // 查不到价格
 }
 
 // ================================================================
@@ -336,31 +335,56 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     const fuelStation = await findBestFuelStation(userLat, userLng, fuelType);
 
     // 第3步: 预加载所有价格，省得递归时反复查数据库
-    // priceMap[chainId][productName] = 单价
+    // priceMap[chainId][用户输入的商品名(小写)] = 单价
+    //
+    // 匹配逻辑（修复"商品消失"问题）：不再要求用户输入跟数据库 productName 完全相等。
+    // 爬虫数据的 productName 是具体商品名（"vogel's bread 700g"），
+    // 用户输入的是简单词（"bread"），这里改成"包含匹配"，命中多条时选该店最便宜的一条。
+    // matchedNameMap 记录每个 (chain, 用户输入名) 实际匹配到的库内商品名，
+    // 用来在方案 breakdown 里告诉用户"bread 匹配到的其实是 Vogel's Bread"，而不是让它悄悄消失。
 
     const priceMap = {};
+    const matchedNameMap = {};
     for (const chainId of availableChains) {
         priceMap[chainId] = {};
+        matchedNameMap[chainId] = {};
     }
 
-    const productNames = items.map(item => item.name.toLowerCase());
-    const allPrices = await PriceSnapshot.find({
-        productName: { $in: productNames },
-        chainId: { $in: availableChains }
-    });
+    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    const allPrices = orConditions.length > 0
+        ? await PriceSnapshot.find({
+            $or: orConditions,
+            chainId: { $in: availableChains }
+        }).lean()
+        : [];
 
-    allPrices.forEach(doc => {
-        if (!priceMap[doc.chainId]) priceMap[doc.chainId] = {};
-        if (doc.unitPrice !== null) {
-            priceMap[doc.chainId][doc.productName] = doc.unitPrice;
+    for (const item of items) {
+        const name = item.name.toLowerCase().trim();
+        for (const chainId of availableChains) {
+            const best = pickBestMatch(findCandidates(allPrices, item.name, chainId), item.name);
+            if (best && best.unitPrice !== null) {
+                priceMap[chainId][name] = best.unitPrice;
+                matchedNameMap[chainId][name] = best.productName;
+            }
         }
-    });
+    }
 
     // 第4步: 算每个商品的最低价（用来算分支定界的下界）
+    // 同时把"在所有选中超市都完全没匹配到价格"的商品单独摘出来（unavailableItems）。
+    //
+    // 这一步很关键：以前只要有一个商品在所有店都查不到价格，
+    // 分支定界会把整条递归分支静默剪掉（见下面 branchAndBound 里的判断），
+    // 导致哪怕清单里只有一个商品匹配失败，也可能整单生成不出任何 split 方案。
+    // 现在改成：查不到价格的商品直接从"参与最优化计算"的清单里剔除，
+    // 用剩下能查到价格的商品正常生成方案，同时把排除掉的商品名报告给调用方，
+    // 而不是让整单结果变成一堆空 breakdown。
 
+    const availableItems = [];
+    const unavailableItems = [];
     const cheapestPrices = {};
+
     for (const item of items) {
-        const name = item.name.toLowerCase();
+        const name = item.name.toLowerCase().trim();
         let cheapest = Infinity;
         for (const chainId of availableChains) {
             const price = priceMap[chainId]?.[name];
@@ -370,7 +394,17 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         }
         if (cheapest !== Infinity) {
             cheapestPrices[name] = cheapest;
+            availableItems.push(item);
+        } else {
+            unavailableItems.push(item.name);
         }
+    }
+
+    if (unavailableItems.length > 0) {
+        console.warn(
+            `[planService] 以下商品在所有选中超市(${availableChains.join(',')})都没有匹配到价格，` +
+            `已从方案计算中排除: ${unavailableItems.join(', ')}`
+        );
     }
 
     // ==================== 第二阶段：算初始上界 ====================
@@ -388,11 +422,11 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         // 算这个连锁的杂货总价
 
         let groceryTotal = 0;
-        let hasMissing = false;
         let itemBreakdown = [];
+        const missingAtThisStore = []; // 这家店没卖的商品（其他店可能有）
 
         for (const item of items) {
-            const name = item.name.toLowerCase();
+            const name = item.name.toLowerCase().trim();
             const unitPrice = priceMap[chainId]?.[name];
 
             if (unitPrice !== undefined && unitPrice !== null) {
@@ -403,10 +437,12 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                     quantity: item.quantity,
                     unitPrice: unitPrice,
                     total: total,
-                    store: chainId
+                    store: chainId,
+                    // 实际命中的库内商品名，比如用户输的 "bread" 实际匹配到了 "Vogel's Bread"
+                    matchedName: matchedNameMap[chainId]?.[name] || null
                 });
             } else {
-                hasMissing = true;
+                missingAtThisStore.push(item.name);
             }
         }
 
@@ -429,7 +465,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                 branchName: branchInfo.branchName,
                 address: branchInfo.address,
                 branchDistance: branchInfo.distance,
-                items: items.map(i => ({ name: i.name, quantity: i.quantity }))
+                items: itemBreakdown.map(i => ({ name: i.name, quantity: i.quantity }))
             }],
             route: [branchInfo.branchId],
             recommendedFuelStation: {
@@ -439,7 +475,11 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                 fuelPrice: fuelStation.fuelPrice
             },
             fuelType: fuelType,
-            hasMissingPrice: hasMissing,
+            hasMissingPrice: missingAtThisStore.length > 0,
+            // 这家店没卖、导致没被计入本方案的商品（不同店可能不一样）
+            missingItems: missingAtThisStore,
+            // 在所有选中超市都完全查不到价格的商品（所有方案通用，从优化计算里被整体排除了）
+            globallyUnavailableItems: unavailableItems,
             breakdown: itemBreakdown,
             // for ranking later
             storeCount: 1
@@ -470,13 +510,14 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
             // = current grocery total + cheapest possible for remaining items + minimal fuel cost
             let remainingCheapest = 0;
             for (const item of remainingItems) {
-                const name = item.name.toLowerCase();
+                const name = item.name.toLowerCase().trim();
                 const cheapest = cheapestPrices[name];
                 if (cheapest !== undefined && cheapest !== null && cheapest !== Infinity) {
                     remainingCheapest += cheapest * item.quantity;
                 } else {
-                    // item has no price anywhere, that's bad
-                    // we can't calculate lower bound properly, so just skip this branch
+                    // 理论上不该再走到这里：branchAndBound 现在只会收到 availableItems
+                    // （已经确认在至少一家店有价格的商品），cheapestPrices 里必然有它的记录。
+                    // 保留这个分支纯粹是防御性编程——万一以后有人改动了调用方式。
                     return;
                 }
             }
@@ -558,12 +599,16 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                     },
                     fuelType: fuelType,
                     hasMissingPrice: false,
+                    missingItems: [],
+                    // 在所有选中超市都完全查不到价格、从优化计算里被整体排除的商品（所有方案通用）
+                    globallyUnavailableItems: unavailableItems,
                     breakdown: assignedItems.map(i => ({
                         name: i.name,
                         quantity: i.quantity,
                         unitPrice: i.unitPrice,
                         total: i.total,
-                        store: i.store
+                        store: i.store,
+                        matchedName: i.matchedName || null
                     })),
                     storeCount: storesVisited.size
                 };
@@ -579,7 +624,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
 
             // RECURSIVE CASE: assign the next item to each possible store
             const nextItem = remainingItems[0];
-            const nextName = nextItem.name.toLowerCase();
+            const nextName = nextItem.name.toLowerCase().trim();
             const newRemaining = remainingItems.slice(1);
 
             for (const chainId of availableChains) {
@@ -603,7 +648,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                         quantity: nextItem.quantity,
                         unitPrice: unitPrice,
                         total: itemTotal,
-                        store: chainId
+                        store: chainId,
+                        matchedName: matchedNameMap[chainId]?.[nextName] || null
                     }],
                     newRemaining,
                     newStores,
@@ -613,7 +659,10 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         }
 
         // start the recursive search from empty assignment
-        await branchAndBound([], items, new Set(), 0);
+        // 注意：这里传 availableItems（已确认至少有一家店能买到的商品），
+        // 不再传原始 items —— 避免清单里一个查不到价格的商品，
+        // 把整个分支定界搜索全部剪空，导致 split 方案一个都生成不出来。
+        await branchAndBound([], availableItems, new Set(), 0);
     }
 
     // ==================== PHASE 4: Sort and rank ====================
