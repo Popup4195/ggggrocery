@@ -30,7 +30,14 @@ function validateGroceryList(req, res, next) {
   // Clean the data and pass to next handler
   req.body.items = items.map(item => ({
     name: item.name.trim(),
-    quantity: item.quantity
+    quantity: item.quantity,
+    // Preserve category (set when the front-end user confirms a specific
+    // product from the search dropdown) so downstream matching can use it
+    // as a hint — dropping it here would silently disable that feature.
+    category: item.category || null,
+    // The exact specific product name the user confirmed, if any — lets a
+    // store that literally carries that product match it directly.
+    confirmedName: item.confirmedName || null
   }))
 
   next()

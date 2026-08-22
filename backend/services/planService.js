@@ -283,7 +283,7 @@ async function getCheapestPrices(items, supermarkets) {
         const name = item.name.toLowerCase().trim();
         let cheapest = Infinity;
         for (const chainId of supermarkets) {
-            const best = pickBestMatch(findCandidates(priceDocs, item.name, chainId), item.name);
+            const best = pickBestMatch(findCandidates(priceDocs, item.name, chainId), item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null && best.unitPrice < cheapest) {
                 cheapest = best.unitPrice;
             }
@@ -328,7 +328,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     // 只保留有分店的品牌
     const availableChains = Object.keys(nearestBranches);
     if (availableChains.length === 0) {
-        return []; // 一个超市都没有，返回空数组
+        return { plans: [], globallyUnavailableItems: [] }; // 一个超市都没有
     }
 
     // 第2步: 找最近的加油站
@@ -345,9 +345,11 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
 
     const priceMap = {};
     const matchedNameMap = {};
+    const imageUrlMap = {}; // imageUrlMap[chainId][用户输入名(小写)] = 实际命中商品的图片URL（PriceSnapshot.imageUrl，覆盖率约89.6%，可能为 null）
     for (const chainId of availableChains) {
         priceMap[chainId] = {};
         matchedNameMap[chainId] = {};
+        imageUrlMap[chainId] = {};
     }
 
     const orConditions = buildNameOrConditions(items.map(item => item.name));
@@ -361,10 +363,11 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     for (const item of items) {
         const name = item.name.toLowerCase().trim();
         for (const chainId of availableChains) {
-            const best = pickBestMatch(findCandidates(allPrices, item.name, chainId), item.name);
+            const best = pickBestMatch(findCandidates(allPrices, item.name, chainId), item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null) {
                 priceMap[chainId][name] = best.unitPrice;
                 matchedNameMap[chainId][name] = best.productName;
+                imageUrlMap[chainId][name] = best.imageUrl || null;
             }
         }
     }
@@ -439,7 +442,9 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                     total: total,
                     store: chainId,
                     // 实际命中的库内商品名，比如用户输的 "bread" 实际匹配到了 "Vogel's Bread"
-                    matchedName: matchedNameMap[chainId]?.[name] || null
+                    matchedName: matchedNameMap[chainId]?.[name] || null,
+                    // 实际命中商品的图片（可能为 null，前端要兜底）
+                    imageUrl: imageUrlMap[chainId]?.[name] || null
                 });
             } else {
                 missingAtThisStore.push(item.name);
@@ -451,6 +456,14 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         const fuelCost = Math.round((roundTripKm / DEFAULT_FUEL_EFFICIENCY) * fuelStation.fuelPrice * 100) / 100;
         groceryTotal = Math.round(groceryTotal * 100) / 100;
         const trueCost = Math.round((groceryTotal + fuelCost) * 100) / 100;
+
+        // 一件商品都没匹配到的店，不能算一个有效的购物方案——
+        // "什么都不买"不该出现在推荐列表里，更不该因为 $0 最便宜被排第一。
+        // 同时也不能拿它去更新 upperBound，否则会拿一个不成立的"零元方案"
+        // 去误导后面分支定界算法的剪枝，可能把本该出现的合法方案剪掉。
+        if (itemBreakdown.length === 0) {
+            continue;
+        }
 
         const plan = {
             strategy: 'single',
@@ -608,7 +621,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                         unitPrice: i.unitPrice,
                         total: i.total,
                         store: i.store,
-                        matchedName: i.matchedName || null
+                        matchedName: i.matchedName || null,
+                        imageUrl: i.imageUrl || null
                     })),
                     storeCount: storesVisited.size
                 };
@@ -649,7 +663,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                         unitPrice: unitPrice,
                         total: itemTotal,
                         store: chainId,
-                        matchedName: matchedNameMap[chainId]?.[nextName] || null
+                        matchedName: matchedNameMap[chainId]?.[nextName] || null,
+                        imageUrl: imageUrlMap[chainId]?.[nextName] || null
                     }],
                     newRemaining,
                     newStores,
@@ -692,7 +707,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     const maxPlans = Math.max(10, minPlans);
     const resultPlans = uniquePlans.slice(0, maxPlans);
 
-    return resultPlans;
+    return { plans: resultPlans, globallyUnavailableItems: unavailableItems };
 }
 
 module.exports = { generatePlans };
