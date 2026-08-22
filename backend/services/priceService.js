@@ -38,7 +38,7 @@ async function getPricesForItems(items, stores) {
 
         stores.forEach(store => {
             const candidates = findCandidates(priceDocs, item.name, store);
-            const best = pickBestMatch(candidates, item.name);
+            const best = pickBestMatch(candidates, item.name, item.category, item.confirmedName);
 
             if (best) {
                 matchedAnywhere = true;
@@ -50,7 +50,9 @@ async function getPricesForItems(items, stores) {
                     category: best.category,
                     // 新增：实际命中的库内商品名，方便前端展示"匹配到：Vogel's Bread"
                     // 以及排查匹配问题时一眼看出到底对上了哪条
-                    matchedName: best.productName
+                    matchedName: best.productName,
+                    // 实际命中商品的图片URL（覆盖率约89.6%，可能为 null）
+                    imageUrl: best.imageUrl || null
                 };
             } else {
                 row[store] = null;
@@ -79,7 +81,9 @@ async function getAllProducts() {
             $group: {
                 _id: "$productName",
                 baseUnit: { $first: "$baseUnit" },
-                category: { $first: "$category" }
+                category: { $first: "$category" },
+                // 用于搜索下拉框展示商品图片（覆盖率约89.6%，可能为 null）
+                imageUrl: { $first: "$imageUrl" }
             }
         },
         // Rename _id to name for frontend compatibility
@@ -88,7 +92,8 @@ async function getAllProducts() {
                 _id: 0,
                 name: "$_id",
                 baseUnit: 1,
-                category: 1
+                category: 1,
+                imageUrl: 1
             }
         }
     ]);

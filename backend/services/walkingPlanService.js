@@ -10,6 +10,11 @@
 const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
+// 复用 planService.js 也在用的同一套匹配逻辑（整词匹配 + 品类优先级 +
+// "一模一样优先"），而不是之前那种精确匹配（$in），否则用户打的宽松词
+// （比如 "bread"）在这里永远查不到东西，因为库里存的是具体商品名
+// （比如 "Vogel's Bread 700g"），根本不会完全相等。
+const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
 
 // 默认步行上限（公里），用户可以在 slider 里调
 const DEFAULT_WALKING_MAX_KM = 2.0;
@@ -94,7 +99,8 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
     if (availableChains.length === 0) {
         return {
             plans: [],
-            message: `No supermarket is within ${maxKm} km walking distance from your location. Try increasing the distance limit or consider driving.`
+            message: `No supermarket is within ${maxKm} km walking distance from your location. Try increasing the distance limit or consider driving.`,
+            globallyUnavailableItems: []
         };
     }
 
@@ -102,23 +108,51 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
 
     // 先建个空的 priceMap，省得后面反复查数据库
     const priceMap = {};
+    const matchedNameMap = {}; // 跟 planService.js 一样，记录每个 (chain, 用户输入名) 实际匹配到的库内商品名
+    const imageUrlMap = {};    // 同理，记录实际命中商品的图片
     for (const chainId of availableChains) {
         priceMap[chainId] = {};
+        matchedNameMap[chainId] = {};
+        imageUrlMap[chainId] = {};
     }
 
-    const productNames = items.map(item => item.name.toLowerCase());
-    const allPrices = await PriceSnapshot.find({
-        productName: { $in: productNames },
-        chainId: { $in: availableChains }
-    });
+    // 一次性预取所有"可能相关"的候选记录（宽松的 $or regex，不是精确匹配），
+    // 真正判断"算不算命中"交给 findCandidates 做整词匹配。
+    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    const priceDocs = orConditions.length > 0
+        ? await PriceSnapshot.find({
+            $or: orConditions,
+            chainId: { $in: availableChains }
+        }).lean()
+        : [];
 
-    // 把价格填进 priceMap
-    allPrices.forEach(doc => {
-        if (!priceMap[doc.chainId]) priceMap[doc.chainId] = {};
-        if (doc.unitPrice !== null) {
-            priceMap[doc.chainId][doc.productName] = doc.unitPrice;
+    for (const chainId of availableChains) {
+        for (const item of items) {
+            const name = item.name.toLowerCase().trim();
+            const candidates = findCandidates(priceDocs, item.name, chainId);
+            const best = pickBestMatch(candidates, item.name, item.category, item.confirmedName);
+            if (best && best.unitPrice !== null) {
+                priceMap[chainId][name] = best.unitPrice;
+                matchedNameMap[chainId][name] = best.productName;
+                imageUrlMap[chainId][name] = best.imageUrl || null;
+            }
         }
-    });
+    }
+
+    // ==================== PHASE 2.5: 找在所有步行可达超市都完全没匹配到价格的商品 ====================
+    // 跟 planService.js 的 unavailableItems 逻辑一致：这些商品哪怕换个店铺组合
+    // 也不可能出现在任何步行方案里，需要单独报告给调用方，而不是让它们在
+    // breakdown 里悄悄消失。
+
+    const unavailableItems = [];
+    for (const item of items) {
+        const name = item.name.toLowerCase().trim();
+        const foundAnywhere = availableChains.some(chainId => {
+            const price = priceMap[chainId]?.[name];
+            return price !== undefined && price !== null;
+        });
+        if (!foundAnywhere) unavailableItems.push(item.name);
+    }
 
     // ==================== PHASE 3: 生成方案 ====================
 
@@ -131,6 +165,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
         let groceryTotal = 0;
         let hasMissing = false;
         const breakdown = [];
+        const missingAtThisStore = []; // 这家店没卖的商品（包括全局都没有的）
 
         for (const item of items) {
             const name = item.name.toLowerCase();
@@ -144,14 +179,24 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                     quantity: item.quantity,
                     unitPrice: unitPrice,
                     total: total,
-                    store: chainId
+                    store: chainId,
+                    matchedName: matchedNameMap[chainId]?.[name] || null,
+                    imageUrl: imageUrlMap[chainId]?.[name] || null
                 });
             } else {
                 hasMissing = true;  // 查不到价格，标记一下
+                missingAtThisStore.push(item.name);
             }
         }
 
         groceryTotal = Math.round(groceryTotal * 100) / 100;
+
+        // 一件商品都没匹配到的店，不能算一个有效的方案——
+        // 跟 planService.js 里同样的修复，避免"买了 0 件东西"却因为
+        // $0 最便宜被排到推荐列表最前面。
+        if (breakdown.length === 0) {
+            continue;
+        }
 
         // 步行距离: 家 → 店 → 家（往返）
         const roundTripKm = Math.round(branchInfo.distance * 2 * 100) / 100;
@@ -178,6 +223,8 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                 roundTripWalkingKm: roundTripKm,
                 roundTripWalkingTimeMin: estimateWalkingTime(roundTripKm),
                 hasMissingPrice: hasMissing,
+                missingItems: missingAtThisStore,
+                globallyUnavailableItems: unavailableItems,
                 breakdown: breakdown,
                 storeCount: 1
             });
@@ -244,7 +291,9 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                         quantity: item.quantity,
                         unitPrice: item.priceA,
                         total: total,
-                        store: chainA
+                        store: chainA,
+                        matchedName: matchedNameMap[chainA]?.[item.name.toLowerCase()] || null,
+                        imageUrl: imageUrlMap[chainA]?.[item.name.toLowerCase()] || null
                     });
                 }
 
@@ -256,11 +305,23 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                         quantity: item.quantity,
                         unitPrice: item.priceB,
                         total: total,
-                        store: chainB
+                        store: chainB,
+                        matchedName: matchedNameMap[chainB]?.[item.name.toLowerCase()] || null,
+                        imageUrl: imageUrlMap[chainB]?.[item.name.toLowerCase()] || null
                     });
                 }
 
                 const groceryTotal = Math.round((totalA + totalB) * 100) / 100;
+
+                // 只有两家店都能查到价格的商品才会进 priceDiffs → itemsInA/itemsInB
+                // （见上面的过滤），只在其中一家有价格的商品会被漏掉——这里补上，
+                // 免得它们在这个双店方案的 breakdown 里悄悄消失。
+                const includedNames = new Set(
+                    [...itemsInA, ...itemsInB].map(i => i.name.toLowerCase())
+                );
+                const missingAtThisSplit = items
+                    .filter(item => !includedNames.has(item.name.toLowerCase()))
+                    .map(item => item.name);
 
                 // 步行路线: 家 → 近的那个 → 远的那个 → 家
                 // 按距离排序，先近后远
@@ -330,7 +391,9 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                         walkingDistance: routeDistance,
                         roundTripWalkingKm: routeDistance,
                         roundTripWalkingTimeMin: estimateWalkingTime(routeDistance),
-                        hasMissingPrice: false,
+                        hasMissingPrice: missingAtThisSplit.length > 0,
+                        missingItems: missingAtThisSplit,
+                        globallyUnavailableItems: unavailableItems,
                         breakdown: [...breakdownA, ...breakdownB],
                         storeCount: 2
                     });
@@ -362,7 +425,9 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
 
     return {
         plans: uniquePlans.slice(0, 10), // 最多返回 10 个方案
-        message: null
+        message: null,
+        // 在所有步行可达超市都完全查不到价格的商品（所有方案通用）
+        globallyUnavailableItems: unavailableItems
     };
 }
 

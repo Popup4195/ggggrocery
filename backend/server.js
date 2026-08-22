@@ -154,12 +154,12 @@ app.post('/api/plans', async (req, res) => {
             });
             if (result.message) {
                 // no walkable supermarkets found
-                return res.status(200).json({ plans: [], message: result.message });
+                return res.status(200).json({ plans: [], message: result.message, globallyUnavailableItems: result.globallyUnavailableItems || [] });
             }
-            return res.json({ plans: result.plans, message: null });
+            return res.json({ plans: result.plans, message: null, globallyUnavailableItems: result.globallyUnavailableItems || [] });
         } else {
             // driving mode: use the branch-and-bound algorithm
-            const plans = await generatePlans({
+            const result = await generatePlans({
 
                 items,
                 supermarkets,
@@ -167,7 +167,7 @@ app.post('/api/plans', async (req, res) => {
                 userLat: parseFloat(userLat),
                 userLng: parseFloat(userLng)
             });
-            res.json({ plans, message: null });
+            res.json({ plans: result.plans, message: null, globallyUnavailableItems: result.globallyUnavailableItems || [] });
         }
     } catch (error) {
         console.error('Plan generation error:', error);
