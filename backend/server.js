@@ -16,6 +16,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '..', '.env.local') });
 const mongoose = require('mongoose');
 const Chain = require('./models/Chain');
 const Branch = require('./models/Branch');
+const ShoppingList = require('./models/ShoppingList');
 
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => console.log('Connected to MongoDB'))
@@ -175,6 +176,83 @@ app.post('/api/plans', async (req, res) => {
     }
 });
 
+
+// ========== FR-S1: shareable shopping list links (guest mode, no login) ==========
+// No auth on any of these — anyone holding the link can view and edit the list.
+// This trade-off (no permission control) has been confirmed acceptable for this pass.
+
+// POST endpoint: create a new shareable list, returns its id
+app.post('/api/lists', async (req, res) => {
+    try {
+        const { items, selectedChains, transportMode, fuelType, walkingMaxKm } = req.body;
+        const list = await ShoppingList.create({
+            items: items || [],
+            selectedChains: selectedChains || [],
+            transportMode: transportMode || 'driving',
+            fuelType: fuelType || '91',
+            walkingMaxKm: walkingMaxKm ?? 2.0
+        });
+        res.status(201).json({ id: list._id });
+    } catch (error) {
+        console.error('Error creating shopping list:', error);
+        res.status(500).json({ error: 'Failed to create shopping list' });
+    }
+});
+
+// GET endpoint: fetch a shared list's items + saved plan settings by id
+// (note: location is deliberately not part of this payload — the viewer supplies their own)
+app.get('/api/lists/:id', async (req, res) => {
+    try {
+        const list = await ShoppingList.findById(req.params.id);
+        if (!list) {
+            return res.status(404).json({ error: 'List not found' });
+        }
+        res.json({
+            id: list._id,
+            items: list.items,
+            selectedChains: list.selectedChains,
+            transportMode: list.transportMode,
+            fuelType: list.fuelType,
+            walkingMaxKm: list.walkingMaxKm
+        });
+    } catch (error) {
+        // includes invalid ObjectId format, which Mongoose throws a CastError for
+        console.error('Error fetching shopping list:', error);
+        res.status(404).json({ error: 'List not found' });
+    }
+});
+
+// PUT endpoint: update a shared list's items + plan settings (anyone with the link can edit)
+app.put('/api/lists/:id', async (req, res) => {
+    try {
+        const { items, selectedChains, transportMode, fuelType, walkingMaxKm } = req.body;
+        const list = await ShoppingList.findByIdAndUpdate(
+            req.params.id,
+            {
+                items: items || [],
+                selectedChains: selectedChains || [],
+                transportMode: transportMode || 'driving',
+                fuelType: fuelType || '91',
+                walkingMaxKm: walkingMaxKm ?? 2.0
+            },
+            { new: true, runValidators: true }
+        );
+        if (!list) {
+            return res.status(404).json({ error: 'List not found' });
+        }
+        res.json({
+            id: list._id,
+            items: list.items,
+            selectedChains: list.selectedChains,
+            transportMode: list.transportMode,
+            fuelType: list.fuelType,
+            walkingMaxKm: list.walkingMaxKm
+        });
+    } catch (error) {
+        console.error('Error updating shopping list:', error);
+        res.status(404).json({ error: 'List not found' });
+    }
+});
 
 // start server
 const PORT = process.env.PORT || 3000;
