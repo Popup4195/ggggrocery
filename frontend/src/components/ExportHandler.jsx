@@ -62,18 +62,12 @@ export default function ExportHandler({ plans }) {
   const handlePrint = () => window.print()
 
   return (
-    <div style={{ marginBottom: '16px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-      <button
-        onClick={() => downloadCSV(plans)}
-        style={{ padding: '6px 16px', cursor: 'pointer', backgroundColor: '#6c757d', color: '#fff', border: 'none', borderRadius: '6px' }}
-      >
-         Export CSV
+    <div className="export-toolbar" aria-label="Result actions">
+      <button className="export-button" onClick={() => downloadCSV(plans)}>
+        Export CSV
       </button>
-      <button
-        onClick={handlePrint}
-        style={{ padding: '6px 16px', cursor: 'pointer', backgroundColor: '#6c757d', color: '#fff', border: 'none', borderRadius: '6px' }}
-      >
-        🖨 Print
+      <button className="export-button" onClick={handlePrint}>
+        Print
       </button>
     </div>
   )
