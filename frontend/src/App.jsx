@@ -3,6 +3,7 @@ import ComparisonDashboard from './components/ComparisonDashboard'
 import ExportHandler from './components/ExportHandler'
 import { TrueCostChart, CostBreakdownChart, WalkingDistanceChart } from './components/VisualizationHelper'
 import SummaryStats from './components/SummaryStats'
+import { getPurchaseSelection } from './utils/purchaseUnit'
 import './App.css'
 
 
@@ -138,7 +139,7 @@ function App() {
     const match = productCatalog.find(
         p => p.name.toLowerCase() === lowerName
     )
-    return match ? match.baseUnit : ''
+    return match ? getPurchaseSelection(match).baseUnit : ''
   }
 
   const updateItemName = (index, newName) => {
@@ -173,13 +174,16 @@ function App() {
 
   const selectSuggestion = (index, product) => {
     const newItems = [...items]
-    // The displayed name becomes the specific matched product for clarity/confirmation,
-    // but "query" is intentionally left untouched — it still holds the loose term the user
-    // typed (e.g. "peach"), which is what actually gets sent to the backend. Sending the
-    // hyper-specific product name instead would only match that exact listing at the one
-    // chain it came from, leaving every other store's plan with an empty breakdown.
+    const purchaseSelection = getPurchaseSelection(product)
+    // The displayed name always becomes the confirmed catalog product. Variable-weight
+    // and existing count-unit products keep the current loose query for cross-store matching;
+    // an explicitly packaged product uses its full selected name as the lookup query below.
     newItems[index].name = product.name
-    newItems[index].baseUnit = product.baseUnit
+    newItems[index].baseUnit = purchaseSelection.baseUnit
+    // A confirmed fixed package must use its complete selected product name as the
+    // lookup query. For variable-weight and existing count-unit products, preserve
+    // the current loose-query behaviour unchanged.
+    if (purchaseSelection.useExactQuery) newItems[index].query = product.name
     // Remember the category of the specific product the user picked (e.g. "Hot & Cold
     // Drinks" for a sparkling water) so the backend can prefer matches in that same
     // category at every store, instead of always falling back to a fixed category
