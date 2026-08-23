@@ -33,7 +33,7 @@ function BreakSymbol() {
 // Chart 1: True Cost comparison (支持断轴)
 // ─────────────────────────────────────────────
 export function TrueCostChart({ plans }) {
-  if (!plans || plans.length === 0) return null
+  if (!plans || plans.length < 2) return null
 
   const data = plans.map((p, idx) => ({
     name: `#${p.rank} ${p.stores.map(s => s.branchName.split(' ')[0]).join('+')}`,
@@ -46,8 +46,8 @@ export function TrueCostChart({ plans }) {
 
   if (!shouldBreak) {
     return (
-        <div style={{ marginBottom: '20px' }}>
-          <h4 style={{ margin: '0 0 8px', fontSize: '1em' }}> True Cost Comparison</h4>
+        <div className="chart-card">
+          <h4 className="chart-title">True Cost Comparison</h4>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={data} margin={{ top: 20, right: 16, left: 0, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -69,8 +69,8 @@ export function TrueCostChart({ plans }) {
   const sharedMargin = { top: 4, right: 16, left: 0, bottom: 0 }
 
   return (
-      <div style={{ marginBottom: '20px' }}>
-        <h4 style={{ margin: '0 0 8px', fontSize: '1em' }}> True Cost Comparison</h4>
+      <div className="chart-card">
+        <h4 className="chart-title">True Cost Comparison</h4>
 
         <ResponsiveContainer width="100%" height={topHeight}>
           <BarChart data={data} margin={{ ...sharedMargin, top: 20 }}>
@@ -115,7 +115,7 @@ export function TrueCostChart({ plans }) {
 // Chart 2: Cost breakdown stacked bars
 // ─────────────────────────────────────────────
 export function CostBreakdownChart({ plans }) {
-  if (!plans || plans.length === 0) return null
+  if (!plans || plans.length < 2) return null
 
   const data = plans.map(p => ({
     name: `#${p.rank}`,
@@ -124,8 +124,8 @@ export function CostBreakdownChart({ plans }) {
   }))
 
   return (
-      <div style={{ marginBottom: '20px' }}>
-        <h4 style={{ margin: '0 0 8px', fontSize: '1em' }}> Cost Breakdown (Groceries vs Fuel)</h4>
+      <div className="chart-card">
+        <h4 className="chart-title">Cost Breakdown</h4>
         <ResponsiveContainer width="100%" height={220}>
           <BarChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" />
@@ -145,7 +145,7 @@ export function CostBreakdownChart({ plans }) {
 // Chart 3: Walking distance comparison (if walking mode)
 // ─────────────────────────────────────────────
 export function WalkingDistanceChart({ plans }) {
-  if (!plans || plans.length === 0) return null
+  if (!plans || plans.length < 2) return null
   const isWalking = plans.some(p => p.transportMode === 'walking')
   if (!isWalking) return null
 
@@ -156,8 +156,8 @@ export function WalkingDistanceChart({ plans }) {
   }))
 
   return (
-      <div style={{ marginBottom: '20px' }}>
-        <h4 style={{ margin: '0 0 8px', fontSize: '1em' }}>🚶 Walking Distance & Time</h4>
+      <div className="chart-card wide">
+        <h4 className="chart-title">Walking Distance &amp; Time</h4>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" />

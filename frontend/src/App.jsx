@@ -3,6 +3,7 @@ import ComparisonDashboard from './components/ComparisonDashboard'
 import ExportHandler from './components/ExportHandler'
 import { TrueCostChart, CostBreakdownChart, WalkingDistanceChart } from './components/VisualizationHelper'
 import SummaryStats from './components/SummaryStats'
+import './App.css'
 
 
 function App() {
@@ -471,668 +472,641 @@ function App() {
   }
 
   // ================================================================
+  // Presentation helpers
+  // ================================================================
+  const getPlanDistance = (plan) => {
+    if (plan.transportMode === 'walking') {
+      return plan.roundTripWalkingKm || plan.walkingDistance || 0
+    }
+    return plan.routeDistance || 0
+  }
+
+  const getOrderedStores = (plan) => {
+    if (plan.transportMode !== 'walking' && plan.route && plan.route.length > 0) {
+      return plan.route
+          .map(branchId => plan.stores.find(store => store.branchId === branchId))
+          .filter(Boolean)
+    }
+    return plan.stores || []
+  }
+
+  const renderPlanOverview = (plan) => {
+    const orderedStores = getOrderedStores(plan)
+
+    return (
+        <div className="plan-overview">
+          <div>
+            <h4 className="overview-title">Stores to visit</h4>
+            <ol className="store-list">
+              {plan.stores.map((store, idx) => (
+                  <li className="store-item" key={store.branchId}>
+                    <span className="store-number">{idx + 1}</span>
+                    <div>
+                      <div className="store-name">
+                        {getChainName(store.chainId)} · {store.branchName}
+                      </div>
+                      <div className="store-meta">
+                        {store.address}
+                        {plan.transportMode === 'walking'
+                            ? ` · ${store.walkingTimeMin ? `~${store.walkingTimeMin} min walk` : `${store.distance.toFixed(1)} km`}`
+                            : ` · ${(store.branchDistance || store.distance || 0).toFixed(1)} km away`
+                        }
+                      </div>
+                      {store.items && store.items.length > 0 && (
+                          <div className="store-meta">
+                            {store.items.map(item => item.name).join(', ')}
+                          </div>
+                      )}
+                    </div>
+                  </li>
+              ))}
+            </ol>
+          </div>
+
+          <div>
+            <h4 className="overview-title">Route overview</h4>
+            <ol className="route-list">
+              <li className="route-step"><strong>Home</strong></li>
+              {orderedStores.map(store => (
+                  <li className="route-step" key={store.branchId}>
+                    <strong>{store.branchName}</strong>
+                  </li>
+              ))}
+              <li className="route-step"><strong>Home</strong></li>
+            </ol>
+          </div>
+        </div>
+    )
+  }
+
+  const renderItemBreakdown = (plan) => {
+    if (!plan.breakdown || plan.breakdown.length === 0) return null
+
+    return (
+        <details className="plan-details">
+          <summary>View item breakdown</summary>
+          <div className="table-scroll">
+            <table className="item-table">
+              <thead>
+              <tr>
+                <th className="align-center">Image</th>
+                <th>Item</th>
+                <th className="align-center">Qty</th>
+                <th className="align-right">Unit price</th>
+                <th className="align-right">Total</th>
+                <th>Store</th>
+              </tr>
+              </thead>
+              <tbody>
+              {plan.breakdown.map((item, idx) => (
+                  <tr key={idx}>
+                    <td className="align-center">
+                      {item.imageUrl ? (
+                          <img
+                              className="product-thumb"
+                              src={item.imageUrl}
+                              alt={item.matchedName || item.name}
+                              onError={(e) => { e.target.style.display = 'none' }}
+                          />
+                      ) : null}
+                    </td>
+                    <td>
+                      {item.name}
+                      {item.matchedName && item.matchedName !== item.name && (
+                          <div className="matched-name">
+                            Matched: {item.matchedName}
+                          </div>
+                      )}
+                    </td>
+                    <td className="align-center">{item.quantity}</td>
+                    <td className="align-right">${item.unitPrice.toFixed(2)}</td>
+                    <td className="align-right">${item.total.toFixed(2)}</td>
+                    <td>{getChainName(item.store)}</td>
+                  </tr>
+              ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+    )
+  }
+
+  const renderPlanNotes = (plan) => (
+      <Fragment>
+        {plan.recommendedFuelStation && (
+            <div className="inline-note">
+              <strong>Recommended fuel stop:</strong> {plan.recommendedFuelStation.name}
+              {plan.recommendedFuelStation.address ? ` · ${plan.recommendedFuelStation.address}` : ''}
+              {` · $${plan.recommendedFuelStation.fuelPrice.toFixed(2)}/L · ${plan.recommendedFuelStation.distance.toFixed(1)} km away`}
+            </div>
+        )}
+        {plan.missingItems && plan.missingItems.length > 0 && (
+            <div className="inline-note warning">
+              <strong>Not included:</strong> {plan.missingItems.join(', ')}
+            </div>
+        )}
+      </Fragment>
+  )
+
+  const bestPlan = plans[0]
+  const savings = plans.length > 1
+      ? plans[plans.length - 1].trueCost - plans[0].trueCost
+      : 0
+
+  // ================================================================
   // RENDER
   // ================================================================
   return (
-      <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '1200px', margin: '0 auto', minWidth: 0 }}>
-        <h1 style={{ marginBottom: '24px', lineHeight: 1.4 }}>🛒 Grocery Saver — Smart Shopping Plans</h1>
-
-
-        {/* ============================================================ */}
-        {/* SECTION 1: Grocery List                                      */}
-        {/* ============================================================ */}
-        <section style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '8px', padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-            <h2 style={{ marginTop: 0, marginBottom: 0 }}> Your Grocery List</h2>
-            <button
-                onClick={handleShareList}
-                disabled={shareLoading}
-                style={{ padding: '6px 16px', cursor: shareLoading ? 'wait' : 'pointer' }}
-            >
-              {shareLoading ? 'Creating link...' : '🔗 Share list'}
-            </button>
-          </div>
-          {shareError && (
-              <p style={{ color: '#c00', fontSize: '0.9em', marginTop: '8px' }}>{shareError}</p>
-          )}
-          {(listLoading || listLoadError) && (
-              <div style={{
-                marginTop: '10px', marginBottom: '10px', padding: '8px 12px',
-                backgroundColor: listLoadError ? '#f8d7da' : '#e7f3ff',
-                border: listLoadError ? '1px solid #f5c2c7' : '1px solid #b6e0fe',
-                borderRadius: '6px', fontSize: '0.9em',
-                color: listLoadError ? '#842029' : '#333'
-              }}>
-                {listLoadError ? `⚠️ ${listLoadError}` : 'Loading shared list... your supermarket and transport settings will be restored — just add your location and generate plans.'}
-              </div>
-          )}
-          {items.map((item, index) => (
-              <div key={index} style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px',
-                flexWrap: 'wrap'
-              }}>
-                <div style={{ position: 'relative', flex: '1 1 140px', minWidth: 0 }}>
-                  <input
-                      type="text"
-                      value={item.name}
-                      onChange={(e) => {
-                        updateItemName(index, e.target.value)
-                        setActiveSuggestionIndex(e.target.value.trim() ? index : null)
-                      }}
-                      onFocus={(e) => {
-                        activeEditRef.current = true
-                        if (e.target.value.trim()) setActiveSuggestionIndex(index)
-                      }}
-                      // Delay closing on blur so a suggestion's onMouseDown fires first —
-                      // otherwise onBlur closes the dropdown before the click registers.
-                      onBlur={() => {
-                        activeEditRef.current = false
-                        setTimeout(() => setActiveSuggestionIndex(null), 150)
-                      }}
-                      placeholder="Item name"
-                      style={{ width: '100%', padding: '5px', boxSizing: 'border-box' }}
-                  />
-                  {activeSuggestionIndex === index && (() => {
-                    const suggestions = getSuggestions(item.name)
-                    if (suggestions.length === 0) return null
-                    return (
-                        <div style={{
-                          position: 'absolute',
-                          top: '100%',
-                          left: 0,
-                          right: 0,
-                          zIndex: 20,
-                          background: '#fff',
-                          border: '1px solid #ccc',
-                          borderRadius: '6px',
-                          marginTop: '2px',
-                          maxHeight: '320px',
-                          overflowY: 'auto',
-                          boxShadow: '0 4px 10px rgba(0,0,0,0.12)'
-                        }}>
-                          {suggestions.map((product, pIdx) => (
-                              <div
-                                  key={pIdx}
-                                  // onMouseDown (not onClick) so this fires before the input's onBlur
-                                  onMouseDown={() => selectSuggestion(index, product)}
-                                  style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    padding: '6px 8px',
-                                    cursor: 'pointer',
-                                    borderBottom: '1px solid #f0f0f0'
-                                  }}
-                                  onMouseEnter={(e) => e.currentTarget.style.background = '#f5f5f5'}
-                                  onMouseLeave={(e) => e.currentTarget.style.background = '#fff'}
-                              >
-                                {product.imageUrl ? (
-                                    <img
-                                        src={product.imageUrl}
-                                        alt={product.name}
-                                        style={{ width: '32px', height: '32px', objectFit: 'cover', borderRadius: '4px', flexShrink: 0 }}
-                                        onError={(e) => { e.target.style.visibility = 'hidden' }}
-                                    />
-                                ) : (
-                                    <span style={{
-                                      width: '32px', height: '32px', flexShrink: 0, borderRadius: '4px',
-                                      background: '#eee', display: 'inline-flex', alignItems: 'center',
-                                      justifyContent: 'center', color: '#aaa', fontSize: '0.7em'
-                                    }}>—</span>
-                                )}
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontSize: '0.9em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {product.name}
-                                  </div>
-                                  <div style={{ fontSize: '0.75em', color: '#999' }}>
-                                    {product.category}{product.baseUnit ? ` · ${product.baseUnit}` : ''}
-                                  </div>
-                                </div>
-                              </div>
-                          ))}
-                        </div>
-                    )
-                  })()}
-                </div>
-                <input
-                    type="number"
-                    min="1"
-                    value={item.quantity}
-                    onChange={(e) => {
-                      const newItems = [...items]
-                      const val = e.target.value
-                      newItems[index].quantity = val === '' ? '' : parseInt(val) || item.quantity
-                      setItems(newItems)
-                    }}
-                    onFocus={() => { activeEditRef.current = true }}
-                    onBlur={(e) => {
-                      activeEditRef.current = false
-                      if (e.target.value === '' || parseInt(e.target.value) < 1) {
-                        const newItems = [...items]
-                        newItems[index].quantity = 1
-                        setItems(newItems)
-                      }
-                    }}
-                    style={{ width: '60px', flexShrink:0 ,padding: '5px' }}
-                />
-                <span style={{ minWidth: '60px', fontSize: '0.9em', color: '#555' }}>
-              {item.baseUnit || ''}
-            </span>
-                <button
-                    onClick={() => {
-                      const newItems = items.filter((_, i) => i !== index)
-                      setItems(newItems)
-                    }}
-                    style={{ padding: '5px 10px', cursor: 'pointer' }}
-                >
-                  ✕
-                </button>
-              </div>
-          ))}
-          <button
-              onClick={() => setItems([...items, { name: '', quantity: 1, baseUnit: '', query: '', category: null, confirmed: false }])}
-              style={{ marginTop: '10px', padding: '5px 15px', cursor: 'pointer' }}
-          >
-            + Add Item
-          </button>
-        </section>
-
-        {/* ============================================================ */}
-        {/* SECTION 2: Supermarket Selection                             */}
-        {/* ============================================================ */}
-        <section style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '8px', padding: '16px' }}>
-          <h2 style={{ marginTop: 0 }}> Select Supermarkets</h2>
-          <p style={{ fontSize: '0.9em', color: '#666', marginTop: '-8px' }}>
-            {transportMode === 'walking'
-                ? 'Pick which supermarket chains you want to consider. The system will find branches within walking distance.'
-                : 'Pick which supermarket chains you want to consider. The system will find the closest branch for each chain.'}
-          </p>
-
-          {chains.length === 0 ? (
-              <span style={{ color: '#888' }}>Loading supermarkets...</span>
-          ) : (
-              chains.map(chain => (
-                  <div key={chain.chainId} style={{ marginBottom: '10px' }}>
-                    <label style={{ marginRight: '15px', fontWeight: 'bold' }}>
-                      <input
-                          type="checkbox"
-                          checked={selectedChains.includes(chain.chainId)}
-                          onChange={() => handleChainToggle(chain.chainId)}
-                      />
-                      {chain.name}
-                    </label>
-
-                    {selectedChains.includes(chain.chainId) && branchesByChain[chain.chainId] && (
-                        <div style={{ marginLeft: '24px', marginTop: '4px', fontSize: '0.9em', color: '#555' }}>
-                          <span style={{ fontStyle: 'italic' }}>Available branches:</span>
-                          <ul style={{ margin: '4px 0 0 16px', padding: 0, listStyle: 'none' }}>
-                            {branchesByChain[chain.chainId].map(branch => (
-                                <li key={branch.branchId} style={{ marginTop: '2px' }}>
-                                  • {branch.name} — <span style={{ fontSize: '0.85em' }}>{branch.address}</span>
-                                </li>
-                            ))}
-                          </ul>
-                        </div>
-                    )}
-                  </div>
-              ))
-          )}
-        </section>
-
-        {/* ============================================================ */}
-        {/* SECTION 3: Settings — Transport Mode + Location               */}
-        {/* ============================================================ */}
-        <section style={{ marginBottom: '30px', border: '1px solid #ddd', borderRadius: '8px', padding: '16px' }}>
-          <h2 style={{ marginTop: 0 }}> Trip Settings</h2>
-
-          {/* Transport mode toggle */}
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ fontWeight: 'bold', marginRight: '16px' }}> Transport Mode:</label>
-            <button
-                onClick={() => setTransportMode('driving')}
-                style={{
-                  padding: '8px 20px',
-                  marginRight: '8px',
-                  cursor: 'pointer',
-                  backgroundColor: transportMode === 'driving' ? '#007bff' : '#eee',
-                  color: transportMode === 'driving' ? '#fff' : '#333',
-                  border: 'none',
-                  borderRadius: '6px',
-                  fontWeight: transportMode === 'driving' ? 'bold' : 'normal'
-                }}
-            >
-              Driving
-            </button>
-            <button
-                onClick={() => setTransportMode('walking')}
-                style={{
-                  padding: '8px 20px',
-                  cursor: 'pointer',
-                  backgroundColor: transportMode === 'walking' ? '#28a745' : '#eee',
-                  color: transportMode === 'walking' ? '#fff' : '#333',
-                  border: 'none',
-                  borderRadius: '6px',
-                  fontWeight: transportMode === 'walking' ? 'bold' : 'normal'
-                }}
-            >
-              Walking / Transit
-            </button>
-          </div>
-
-          {/* Driving mode: Fuel type + efficiency info */}
-          {transportMode === 'driving' && (
-              <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#f9f9f9', borderRadius: '6px' }}>
-                <label style={{ fontWeight: 'bold', marginRight: '12px' }}> Fuel Type:</label>
-                <select
-                    value={fuelType}
-                    onChange={(e) => setFuelType(e.target.value)}
-                    style={{ padding: '6px 12px', fontSize: '1em' }}
-                >
-                  <option value="91">91 Octane</option>
-                  <option value="95">95 Octane</option>
-                  <option value="diesel">Diesel</option>
-                </select>
-                <span style={{ marginLeft: '12px', fontSize: '0.9em', color: '#666' }}>
-              Fuel efficiency: 10 km/L (NZ average) | We auto-find the cheapest fuel station near you
-            </span>
-              </div>
-          )}
-
-          {/* Walking mode: distance limit */}
-          {transportMode === 'walking' && (
-              <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: '#f0fff4', borderRadius: '6px' }}>
-                <label style={{ fontWeight: 'bold', marginRight: '12px' }}> Max walking distance:</label>
-                <input
-                    type="range"
-                    min="0.5"
-                    max="5.0"
-                    step="0.5"
-                    value={walkingMaxKm}
-                    onChange={(e) => setWalkingMaxKm(parseFloat(e.target.value))}
-                    style={{ verticalAlign: 'middle', width: '150px' }}
-                />
-                <span style={{ marginLeft: '10px', fontWeight: 'bold', fontSize: '1em' }}>
-              {walkingMaxKm.toFixed(1)} km
-            </span>
-                <span style={{ marginLeft: '12px', fontSize: '0.9em', color: '#666' }}>
-              (~{Math.round(walkingMaxKm / 5 * 60)} min walk one way)
-            </span>
-              </div>
-          )}
-
-          {/* Your location input */}
-          <div>
-            <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.9em', marginBottom: '4px' }}> Latitude:</label>
-                <input
-                    type="text"
-                    value={userLat}
-                    onChange={(e) => setUserLat(e.target.value)}
-                    placeholder="e.g. -41.2865"
-                    style={{ width: '140px', padding: '5px' }}
-                />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.9em', marginBottom: '4px' }}> Longitude:</label>
-                <input
-                    type="text"
-                    value={userLng}
-                    onChange={(e) => setUserLng(e.target.value)}
-                    placeholder="e.g. 174.7762"
-                    style={{ width: '140px', padding: '5px' }}
-                />
-              </div>
-              <button
-                  onClick={getUserLocation}
-                  style={{ padding: '6px 16px', cursor: 'pointer', height: '32px' }}
-              >
-                Use My Location
-              </button>
-            </div>
-            {locationStatus && (
-                <p style={{ fontSize: '0.9em', marginTop: '8px', marginBottom: 0 }}>{locationStatus}</p>
-            )}
-            <p style={{ fontSize: '0.8em', color: '#888', marginTop: '6px', marginBottom: 0 }}>
-              Tip: Wellington city centre is approx Lat -41.2865, Lng 174.7762
+      <div className="app-shell">
+        <header className="app-header">
+          <div className="brand-lockup">
+            <p className="eyebrow">Smarter grocery planning</p>
+            <h1 className="app-title">Grocery Saver</h1>
+            <p className="app-subtitle">
+              Build your list, choose your stores, and find the most cost-effective trip.
             </p>
           </div>
-        </section>
-
-
-        {/* ============================================================ */}
-        {/* SECTION 4: Action Button                                     */}
-        {/* ============================================================ */}
-        <div style={{ marginBottom: '30px' }}>
           <button
-              onClick={generatePlans}
-              disabled={loading}
-              style={{
-                padding: '12px 32px',
-                cursor: loading ? 'wait' : 'pointer',
-                fontSize: '1.1em',
-                backgroundColor: loading ? '#aaa' : '#28a745',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '8px',
-                opacity: loading ? 0.7 : 1
-              }}
+              className="button button-secondary share-button"
+              onClick={handleShareList}
+              disabled={shareLoading}
           >
-            {loading
-                ? ' Generating Plans...'
-                : transportMode === 'walking'
-                    ? ' Find Walking Plans'
-                    : ' Generate Shopping Plans'}
-
+            {shareLoading ? 'Creating link…' : 'Share list'}
           </button>
+        </header>
 
-          {error && (
-              <p style={{ color: '#c00', marginTop: '12px', fontSize: '0.95em' }}>{error}</p>
-          )}
-        </div>
-
-        {/* ============================================================ */}
-        {/* SECTION 5: shopping plans result display (FR07 output + FR09 Dashboard) */}
-        {/* ============================================================ */}
-
-
-        {plans.length > 0 && (
-            <section style={{ marginBottom: '30px', border: '2px solid #28a745', borderRadius: '8px', padding: '16px' }}>
-              <h2 style={{ marginTop: 0, color: '#28a745' }}> Your Shopping Plans</h2>
-              <p style={{ fontSize: '0.9em', color: '#666', marginTop: '-8px', marginBottom: '16px' }}>
-                {transportMode === 'walking'
-                    ? 'Plans are sorted from cheapest to closest. Walking distances and estimated times are shown for each option.'
-                    : 'We compared all possible shopping strategies for you. Plans are sorted from cheapest to most expensive. Fuel station is auto-recommended — the closest one to your location.'}
-              </p>
-
-              {/* FR05: items that couldn't be found at ANY selected store, across all plans */}
-              {globallyUnavailableItems && globallyUnavailableItems.length > 0 && (
-                  <div style={{
-                    marginBottom: '16px', padding: '10px 14px', backgroundColor: '#f8d7da',
-                    border: '1px solid #f5c2c7', borderRadius: '6px', fontSize: '0.9em', color: '#842029'
-                  }}>
-                    ⚠️ No price data found for the following item(s) at any selected store, so they are not included in any plan below: <strong>{globallyUnavailableItems.join(', ')}</strong>
-                  </div>
-              )}
-
-              {/* FR09: Export toolbar */}
-              <ExportHandler plans={plans} />
-              <SummaryStats plans={plans} />
-
-              {/* FR09: Charts */}
-              <TrueCostChart plans={plans} />
-              <CostBreakdownChart plans={plans} />
-              <WalkingDistanceChart plans={plans} />
-
-              {/* FR09: Side-by-side comparison table */}
-              <ComparisonDashboard plans={plans} getChainName={getChainName} />
-
-              {plans.map((plan) => (
-                  <div
-                      key={`${plan.strategy}-${plan.stores.map(s => s.chainId).join('-')}-${plan.rank}`}
-                      style={{
-                        marginBottom: '20px',
-                        padding: '16px',
-                        border: plan.rank === 1 ? '2px solid #28a745' : '1px solid #ddd',
-                        borderRadius: '8px',
-                        backgroundColor: plan.rank === 1 ? '#f0fff4' : '#fff'
-                      }}
-                  >
-                    {/* Plan header with rank */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      flexWrap: 'wrap',gap:'9px'
-                    }}>
-                      <h3 style={{ margin: 0, fontSize: '1.2em' }}>
-                        {getRankIcon(plan.rank)} {getStrategyLabel(plan)}
-                        {plan.rank === 1 && (
-                            <span style={{
-                              marginLeft: '10px',
-                              fontSize: '0.8em',
-                              backgroundColor: '#28a745',
-                              color: '#fff',
-                              padding: '2px 10px',
-                              borderRadius: '12px'
-                            }}>
-                      BEST DEAL
-                    </span>
-                        )}
-                      </h3>
-                      <div style={{ fontSize: '1.3em', fontWeight: 'bold', color: plan.rank === 1 ? '#155724' : '#333' }}>
-                        ${plan.trueCost.toFixed(2)}
-                      </div>
-                    </div>
-
-                    {/* Cost breakdown — driving vs walking */}
-                    {plan.transportMode === 'walking' ? (
-                        <div style={{ marginTop: '12px', display: 'flex', gap: '20px', flexWrap: 'wrap', fontSize: '0.95em' }}>
-                          <div>
-                            <span style={{ color: '#666' }}>Groceries:</span>{' '}
-                            <strong>${plan.groceryTotal.toFixed(2)}</strong>
-                          </div>
-                          <div>
-                            <span style={{ color: '#666' }}>Walking distance:</span>{' '}
-                            <strong>{plan.roundTripWalkingKm.toFixed(1)} km round trip</strong>
-                          </div>
-                          {plan.roundTripWalkingTimeMin && (
-                              <div>
-                                <span style={{ color: '#666' }}>Est. walking time:</span>{' '}
-                                <strong>~{plan.roundTripWalkingTimeMin} min total</strong>
-                              </div>
-                          )}
-                        </div>
-                    ) : (
-                        <div style={{ marginTop: '12px', display: 'flex', gap: '20px', flexWrap: 'wrap', fontSize: '0.95em' }}>
-                          <div>
-                            <span style={{ color: '#666' }}>Groceries:</span>{' '}
-                            <strong>${plan.groceryTotal.toFixed(2)}</strong>
-                          </div>
-                          <div>
-                            <span style={{ color: '#666' }}>Fuel Cost:</span>{' '}
-                            <strong style={{ color: '#c00' }}>${(plan.fuelCost || 0).toFixed(2)}</strong>
-                          </div>
-                          <div>
-                            <span style={{ color: '#666' }}>Fuel Price:</span>{' '}
-                            <strong>${(plan.fuelPrice || 0).toFixed(2)}/L</strong>
-                          </div>
-                          <div>
-                            <span style={{ color: '#666' }}>Total Driving:</span>{' '}
-                            <strong>{(plan.routeDistance || 0).toFixed(1)} km</strong>
-                          </div>
-                        </div>
-                    )}
-
-                    {/* Stores involved */}
-                    <div style={{ marginTop: '12px' }}>
-                      <strong>🛒 Stores to visit:</strong>
-                      <div style={{ marginTop: '4px', marginLeft: '8px' }}>
-                        {plan.stores.map((store, idx) => (
-                            <div key={store.branchId} style={{ marginBottom: '4px' }}>
-                              <div style={{ fontWeight: 'bold' }}>
-                                {idx + 1}. {getChainName(store.chainId)} — {store.branchName}
-                              </div>
-                              <div style={{ fontSize: '0.85em', color: '#666', marginLeft: '16px' }}>
-                                {store.address}{' '}
-                                {plan.transportMode === 'walking'
-                                    ? `|  ${store.walkingTimeMin ? `~${store.walkingTimeMin} min walk` : `${store.distance.toFixed(1)} km`}`
-                                    : `|  ${(store.branchDistance || store.distance || 0).toFixed(1)} km from your location`
-                                }
-                              </div>
-                              {store.items && store.items.length > 0 && (
-                                  <div style={{ fontSize: '0.85em', color: '#555', marginLeft: '16px' }}>
-                                    Items: {store.items.map(i => i.name).join(', ')}
-                                  </div>
-                              )}
-                            </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Route order — only for driving */}
-                    {plan.transportMode !== 'walking' && plan.route && plan.route.length > 0 && (
-                        <div style={{ marginTop: '8px', fontSize: '0.9em', color: '#555' }}>
-                          <strong>Route:</strong> Home {'→'}{' '}
-                          {plan.route.map((branchId, idx) => {
-                            const store = plan.stores.find(s => s.branchId === branchId)
-                            return <Fragment key={branchId}>{store?.branchName || branchId}{idx < plan.route.length - 1 ? ' → ' : ' → Home'}</Fragment>
-                          })}
-                        </div>
-                    )}
-
-                    {/* Walking route info */}
-                    {plan.transportMode === 'walking' && plan.storeCount > 1 && (
-                        <div style={{ marginTop: '8px', fontSize: '0.9em', color: '#555' }}>
-                          <strong>Walking route:</strong> Home {'→'}{' '}
-                          {plan.stores.map((s, idx) => (
-                              <Fragment key={s.branchId}>
-                                {s.branchName}{idx < plan.stores.length - 1 ? ' → ' : ' → Home'}
-                              </Fragment>
-                          ))}
-                        </div>
-                    )}
-
-                    {/* Recommended fuel station — driving only */}
-                    {plan.recommendedFuelStation && (
-                        <div style={{ marginTop: '8px', fontSize: '0.9em', color: '#333', padding: '6px 10px', backgroundColor: '#fff3cd', borderRadius: '6px', display: 'inline-block' }}>
-                          <strong>Recommended:</strong> {plan.recommendedFuelStation.name}
-                          {plan.recommendedFuelStation.address ? ` (${plan.recommendedFuelStation.address})` : ''}
-                          {' — '}${plan.recommendedFuelStation.fuelPrice.toFixed(2)}/L
-                          {' — '}{plan.recommendedFuelStation.distance.toFixed(1)} km from you
-                        </div>
-                    )}
-
-                    {/* FR05: items missing at THIS specific store's plan (still had a price somewhere else, so plan exists, but not at this combination) */}
-                    {plan.missingItems && plan.missingItems.length > 0 && (
-                        <div style={{ marginTop: '8px', padding: '6px 10px', backgroundColor: '#fff3cd', borderRadius: '6px', fontSize: '0.85em', color: '#856404', display: 'inline-block' }}>
-                          ⚠️ Not included in this plan (no match found): {plan.missingItems.join(', ')}
-                        </div>
-                    )}
-
-                    {/* Item breakdown table */}
-                    {plan.breakdown && plan.breakdown.length > 0 && (
-                        <div style={{ overflowX:'auto',marginTop: '12px' }}>
-                          <details>
-                            <summary style={{ cursor: 'pointer', fontSize: '0.9em', color: '#007bff' }}>
-                              View item breakdown
-                            </summary>
-                            <table style={{ marginTop: '8px', width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
-                              <thead>
-                              <tr style={{ backgroundColor: '#f8f9fa' }}>
-                                <th style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'center' }}>Image</th>
-                                <th style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'left' }}>Item</th>
-                                <th style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'center' }}>Qty</th>
-                                <th style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'right' }}>Unit Price</th>
-                                <th style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'right' }}>Total</th>
-                                <th style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'left' }}>Store</th>
-                              </tr>
-                              </thead>
-                              <tbody>
-                              {plan.breakdown.map((item, idx) => {
-                                const matched = item.matchedName
-                                const image = item.imageUrl
-                                return (
-                                    <tr key={idx}>
-                                      <td style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'center' }}>
-                                        {image ? (
-                                            <img
-                                                src={image}
-                                                alt={matched || item.name}
-                                                style={{ width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' }}
-                                                onError={(e) => { e.target.style.display = 'none' }}
-                                            />
-                                        ) : null}
-                                      </td>
-                                      <td style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        {item.name}
-                                        {matched && matched !== item.name && (
-                                            <div style={{ fontSize: '0.8em', color: '#888', marginTop: '2px' }}>
-                                              matched: {matched} (cheapest match in category)
-                                            </div>
-                                        )}
-                                      </td>
-                                      <td style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'center' }}>{item.quantity}</td>
-                                      <td style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'right' }}>
-                                        ${item.unitPrice.toFixed(2)}
-                                      </td>
-                                      <td style={{ padding: '6px', border: '1px solid #ddd', textAlign: 'right' }}>
-                                        ${item.total.toFixed(2)}
-                                      </td>
-                                      <td style={{ padding: '6px', border: '1px solid #ddd' }}>{getChainName(item.store)}</td>
-                                    </tr>
-                                )
-                              })}
-                              </tbody>
-                            </table>
-                          </details>
-                        </div>
-                    )}
-                  </div>
-              ))}
-
-              {/* Summary */}
-              {plans.length > 0 && (
-                  <div style={{ marginTop: '20px', padding: '12px', backgroundColor: '#e8f5e9', borderRadius: '8px', textAlign: 'center' }}>
-                    <h3 style={{ margin: 0, color: '#155724' }}>
-                      Best plan saves you <strong>${(plans[plans.length - 1].trueCost - plans[0].trueCost).toFixed(2)}</strong> compared to the most expensive option!
-                    </h3>
-                    <p style={{ margin: '4px 0 0', fontSize: '0.9em', color: '#666' }}>
-                      {plans[0].strategy === 'single'
-                          ? `Best to shop at ${plans[0].stores[0].branchName} — Total $${plans[0].trueCost.toFixed(2)}`
-                          : `Best to split your shopping — Total $${plans[0].trueCost.toFixed(2)}`
-                      }
-                    </p>
-                  </div>
-              )}
-            </section>
+        {shareError && <div className="status-banner error">{shareError}</div>}
+        {(listLoading || listLoadError) && (
+            <div className={`status-banner${listLoadError ? ' error' : ''}`}>
+              {listLoadError
+                  ? listLoadError
+                  : 'Loading the shared list and its saved shopping settings…'}
+            </div>
         )}
 
-        {/* ========== FR-S1: share link modal ========== */}
-        {shareModalOpen && (
-            <div
-                style={{
-                  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                  backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex',
-                  alignItems: 'center', justifyContent: 'center', zIndex: 1000
-                }}
-                onClick={() => setShareModalOpen(false)}
-            >
-              <div
-                  style={{ background: '#fff', padding: '20px', borderRadius: '8px', maxWidth: '440px', width: '90%' }}
-                  onClick={(e) => e.stopPropagation()}
+        <main>
+          <div className="planner-grid">
+            <section className="panel grocery-panel">
+              <div className="panel-header">
+                <div>
+                  <div className="step-label">
+                    <span className="step-number">1</span>
+                    Your list
+                  </div>
+                  <h2 className="panel-title">Grocery List</h2>
+                  <p className="panel-description">Search for each product and set the quantity you need.</p>
+                </div>
+              </div>
+
+              <div className="item-columns" aria-hidden="true">
+                <span>Product</span>
+                <span>Qty</span>
+                <span>Unit</span>
+                <span />
+              </div>
+
+              <div className="grocery-list">
+                {items.map((item, index) => (
+                    <div className="grocery-row" key={index}>
+                      <div className="field-wrap">
+                        <input
+                            className="field"
+                            type="text"
+                            value={item.name}
+                            onChange={(e) => {
+                              updateItemName(index, e.target.value)
+                              setActiveSuggestionIndex(e.target.value.trim() ? index : null)
+                            }}
+                            onFocus={(e) => {
+                              activeEditRef.current = true
+                              if (e.target.value.trim()) setActiveSuggestionIndex(index)
+                            }}
+                            onBlur={() => {
+                              activeEditRef.current = false
+                              setTimeout(() => setActiveSuggestionIndex(null), 150)
+                            }}
+                            placeholder="Search for a product"
+                            aria-label={`Grocery item ${index + 1}`}
+                        />
+
+                        {activeSuggestionIndex === index && (() => {
+                          const suggestions = getSuggestions(item.name)
+                          if (suggestions.length === 0) return null
+
+                          return (
+                              <div className="suggestions">
+                                {suggestions.map((product, productIndex) => (
+                                    <div
+                                        className="suggestion-item"
+                                        key={productIndex}
+                                        onMouseDown={() => selectSuggestion(index, product)}
+                                    >
+                                      {product.imageUrl ? (
+                                          <img
+                                              className="suggestion-image"
+                                              src={product.imageUrl}
+                                              alt=""
+                                              onError={(e) => { e.target.style.visibility = 'hidden' }}
+                                          />
+                                      ) : (
+                                          <span className="suggestion-placeholder">—</span>
+                                      )}
+                                      <div className="suggestion-copy">
+                                        <div className="suggestion-name">{product.name}</div>
+                                        <div className="suggestion-meta">
+                                          {product.category}{product.baseUnit ? ` · ${product.baseUnit}` : ''}
+                                        </div>
+                                      </div>
+                                    </div>
+                                ))}
+                              </div>
+                          )
+                        })()}
+                      </div>
+
+                      <input
+                          className="field quantity-field"
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          aria-label={`Quantity for grocery item ${index + 1}`}
+                          onChange={(e) => {
+                            const newItems = [...items]
+                            const val = e.target.value
+                            newItems[index].quantity = val === '' ? '' : parseInt(val) || item.quantity
+                            setItems(newItems)
+                          }}
+                          onFocus={() => { activeEditRef.current = true }}
+                          onBlur={(e) => {
+                            activeEditRef.current = false
+                            if (e.target.value === '' || parseInt(e.target.value) < 1) {
+                              const newItems = [...items]
+                              newItems[index].quantity = 1
+                              setItems(newItems)
+                            }
+                          }}
+                      />
+
+                      <span className="unit-label">{item.baseUnit || '—'}</span>
+
+                      <button
+                          className="button button-danger-quiet"
+                          onClick={() => setItems(items.filter((_, itemIndex) => itemIndex !== index))}
+                          aria-label={`Remove grocery item ${index + 1}`}
+                          title="Remove item"
+                      >
+                        ×
+                      </button>
+                    </div>
+                ))}
+              </div>
+
+              <button
+                  className="button button-quiet add-item-button"
+                  onClick={() => setItems([
+                    ...items,
+                    { name: '', quantity: 1, baseUnit: '', query: '', category: null, confirmed: false }
+                  ])}
               >
-                <h3 style={{ marginTop: 0 }}>Share this list</h3>
-                <p style={{ fontSize: '0.9em', color: '#666' }}>
-                  Anyone with this link can view and edit this list — no account needed.
-                  Your selected supermarkets and transport mode come with it too; they'll
-                  just need to enter their own location and hit "Generate Shopping Plans".
-                  Edits sync automatically every few seconds while the page is open.
+                + Add item
+              </button>
+            </section>
+
+            <div className="planner-sidebar">
+              <section className="panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="step-label">
+                      <span className="step-number">2</span>
+                      Store preferences
+                    </div>
+                    <h2 className="panel-title">Supermarkets</h2>
+                    <p className="panel-description">Choose the chains you want included.</p>
+                  </div>
+                  <span className="selection-count">{selectedChains.length} selected</span>
+                </div>
+
+                {chains.length === 0 ? (
+                    <p className="panel-description">Loading supermarkets…</p>
+                ) : (
+                    <div className="supermarket-list">
+                      {chains.map(chain => (
+                          <div className="supermarket-block" key={chain.chainId}>
+                            <label className={`supermarket-option${selectedChains.includes(chain.chainId) ? ' selected' : ''}`}>
+                              <input
+                                  type="checkbox"
+                                  checked={selectedChains.includes(chain.chainId)}
+                                  onChange={() => handleChainToggle(chain.chainId)}
+                              />
+                              <span>{chain.name}</span>
+                            </label>
+
+                            {selectedChains.includes(chain.chainId) && branchesByChain[chain.chainId] && (
+                                <details className="branch-details">
+                                  <summary>
+                                    {branchesByChain[chain.chainId].length} available branches
+                                  </summary>
+                                  <ul className="branch-list">
+                                    {branchesByChain[chain.chainId].map(branch => (
+                                        <li key={branch.branchId}>
+                                          {branch.name}
+                                          <span className="branch-address">{branch.address}</span>
+                                        </li>
+                                    ))}
+                                  </ul>
+                                </details>
+                            )}
+                          </div>
+                      ))}
+                    </div>
+                )}
+              </section>
+
+              <section className="panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="step-label">
+                      <span className="step-number">3</span>
+                      Your trip
+                    </div>
+                    <h2 className="panel-title">Trip Settings</h2>
+                    <p className="panel-description">Set how you travel and where you start.</p>
+                  </div>
+                </div>
+
+                <div className="segmented-control" aria-label="Transport mode">
+                  <button
+                      className={`segment-button${transportMode === 'driving' ? ' active' : ''}`}
+                      onClick={() => setTransportMode('driving')}
+                      aria-pressed={transportMode === 'driving'}
+                  >
+                    Driving
+                  </button>
+                  <button
+                      className={`segment-button${transportMode === 'walking' ? ' active' : ''}`}
+                      onClick={() => setTransportMode('walking')}
+                      aria-pressed={transportMode === 'walking'}
+                  >
+                    Walking / Transit
+                  </button>
+                </div>
+
+                {transportMode === 'driving' ? (
+                    <div className="settings-box">
+                      <label className="field-label" htmlFor="fuel-type">Fuel type</label>
+                      <select
+                          className="select-field"
+                          id="fuel-type"
+                          value={fuelType}
+                          onChange={(e) => setFuelType(e.target.value)}
+                      >
+                        <option value="91">91 Octane</option>
+                        <option value="95">95 Octane</option>
+                        <option value="diesel">Diesel</option>
+                      </select>
+                      <p className="field-help">Uses 10 km/L efficiency and finds a nearby fuel station.</p>
+                    </div>
+                ) : (
+                    <div className="settings-box">
+                      <label className="field-label" htmlFor="walking-distance">Maximum walking distance</label>
+                      <div className="range-row">
+                        <input
+                            className="range-field"
+                            id="walking-distance"
+                            type="range"
+                            min="0.5"
+                            max="5.0"
+                            step="0.5"
+                            value={walkingMaxKm}
+                            onChange={(e) => setWalkingMaxKm(parseFloat(e.target.value))}
+                        />
+                        <span className="range-value">{walkingMaxKm.toFixed(1)} km</span>
+                      </div>
+                      <p className="field-help">Approximately {Math.round(walkingMaxKm / 5 * 60)} minutes each way.</p>
+                    </div>
+                )}
+
+                <div className="location-block">
+                  <span className="field-label">Starting location</span>
+                  <div className="location-actions">
+                    <button className="button button-secondary" onClick={getUserLocation}>
+                      Use my location
+                    </button>
+                  </div>
+                  {locationStatus && <p className="location-status">{locationStatus}</p>}
+
+                  <details className="manual-location" defaultOpen={!userLat && !userLng}>
+                    <summary>Enter coordinates manually</summary>
+                    <div className="coordinate-grid">
+                      <div>
+                        <label className="field-label" htmlFor="latitude">Latitude</label>
+                        <input
+                            className="field"
+                            id="latitude"
+                            type="text"
+                            value={userLat}
+                            onChange={(e) => setUserLat(e.target.value)}
+                            placeholder="-41.2865"
+                        />
+                      </div>
+                      <div>
+                        <label className="field-label" htmlFor="longitude">Longitude</label>
+                        <input
+                            className="field"
+                            id="longitude"
+                            type="text"
+                            value={userLng}
+                            onChange={(e) => setUserLng(e.target.value)}
+                            placeholder="174.7762"
+                        />
+                      </div>
+                    </div>
+                    <p className="field-help">Wellington city centre: -41.2865, 174.7762</p>
+                  </details>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <div className="generate-area">
+            {error && <div className="form-error">{error}</div>}
+            <button
+                className="button button-primary generate-button"
+                onClick={generatePlans}
+                disabled={loading}
+            >
+              {loading
+                  ? 'Generating plans…'
+                  : transportMode === 'walking'
+                      ? 'Find Walking Plans'
+                      : 'Generate Shopping Plans'}
+            </button>
+          </div>
+
+          {bestPlan && (
+              <section className="results-section">
+                <div className="results-heading-row">
+                  <div>
+                    <p className="eyebrow">Your results</p>
+                    <h2 className="results-title">Shopping Plans</h2>
+                    <p className="results-subtitle">
+                      {plans.length > 1
+                          ? 'The best option is highlighted first. Explore alternatives only when you need them.'
+                          : 'Here is the available plan for your trip.'}
+                    </p>
+                  </div>
+                  <ExportHandler plans={plans} />
+                </div>
+
+                {globallyUnavailableItems.length > 0 && (
+                    <div className="warning-banner">
+                      <strong>No price data:</strong> {globallyUnavailableItems.join(', ')}.
+                      These items are not included in the plans below.
+                    </div>
+                )}
+
+                <article className="recommended-card">
+                  <div className="recommended-main">
+                    <div>
+                      <span className="recommended-badge">
+                        {plans.length > 1 ? 'Recommended · Best plan' : 'Your plan'}
+                      </span>
+                      <h3 className="recommended-title">{getStrategyLabel(bestPlan)}</h3>
+                      {plans.length > 1 && (
+                          <p className="savings-copy">
+                            Save ${savings.toFixed(2)} compared with the most expensive option.
+                          </p>
+                      )}
+                    </div>
+                    <div className="total-cost-block">
+                      <span className="total-cost-label">Total cost</span>
+                      <span className="total-cost">${bestPlan.trueCost.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-grid">
+                    <div className="metric">
+                      <span className="metric-label">Groceries</span>
+                      <span className="metric-value">${bestPlan.groceryTotal.toFixed(2)}</span>
+                    </div>
+                    <div className="metric">
+                      <span className="metric-label">
+                        {bestPlan.transportMode === 'walking' ? 'Walking time' : 'Fuel cost'}
+                      </span>
+                      <span className="metric-value">
+                        {bestPlan.transportMode === 'walking'
+                            ? `~${bestPlan.roundTripWalkingTimeMin || 0} min`
+                            : `$${(bestPlan.fuelCost || 0).toFixed(2)}`}
+                      </span>
+                    </div>
+                    <div className="metric">
+                      <span className="metric-label">Distance</span>
+                      <span className="metric-value">{getPlanDistance(bestPlan).toFixed(1)} km</span>
+                    </div>
+                    <div className="metric">
+                      <span className="metric-label">Stores</span>
+                      <span className="metric-value">{bestPlan.storeCount || bestPlan.stores.length}</span>
+                    </div>
+                  </div>
+
+                  {renderPlanOverview(bestPlan)}
+                  {renderPlanNotes(bestPlan)}
+                  {renderItemBreakdown(bestPlan)}
+                </article>
+
+                {plans.length > 1 && (
+                    <section className="alternatives-section">
+                      <h3 className="subsection-heading">Other options</h3>
+                      <p className="subsection-copy">Review a compact summary, then open a plan only if you need more detail.</p>
+
+                      <div className="alternative-list">
+                        {plans.slice(1).map(plan => (
+                            <article
+                                className="alternative-card"
+                                key={`${plan.strategy}-${plan.stores.map(store => store.chainId).join('-')}-${plan.rank}`}
+                            >
+                              <div className="alternative-summary">
+                                <div>
+                                  <div className="alternative-rank">{getRankIcon(plan.rank)} Option {plan.rank}</div>
+                                  <h4 className="alternative-name">{getStrategyLabel(plan)}</h4>
+                                  <div className="alternative-meta">
+                                    <span>Groceries ${plan.groceryTotal.toFixed(2)}</span>
+                                    {plan.transportMode === 'walking'
+                                        ? <span>{getPlanDistance(plan).toFixed(1)} km walk</span>
+                                        : <span>Fuel ${(plan.fuelCost || 0).toFixed(2)}</span>
+                                    }
+                                    <span>{getPlanDistance(plan).toFixed(1)} km</span>
+                                    <span>{plan.storeCount || plan.stores.length} stores</span>
+                                  </div>
+                                </div>
+                                <div className="alternative-price">${plan.trueCost.toFixed(2)}</div>
+                              </div>
+
+                              <details className="alternative-details">
+                                <summary>View plan details</summary>
+                                <div className="alternative-detail-body">
+                                  {renderPlanOverview(plan)}
+                                  {renderPlanNotes(plan)}
+                                  {renderItemBreakdown(plan)}
+                                </div>
+                              </details>
+                            </article>
+                        ))}
+                      </div>
+                    </section>
+                )}
+
+                {plans.length > 1 && (
+                    <details className="comparison-disclosure">
+                      <summary>Compare all plans</summary>
+                      <div className="comparison-content">
+                        <SummaryStats plans={plans} />
+                        <div className="charts-grid">
+                          <TrueCostChart plans={plans} />
+                          <CostBreakdownChart plans={plans} />
+                          <WalkingDistanceChart plans={plans} />
+                        </div>
+                        <ComparisonDashboard plans={plans} getChainName={getChainName} />
+                      </div>
+                    </details>
+                )}
+              </section>
+          )}
+        </main>
+
+        {shareModalOpen && (
+            <div className="modal-backdrop" onClick={() => setShareModalOpen(false)}>
+              <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+                <h3 className="modal-title">Share this list</h3>
+                <p className="modal-copy">
+                  Anyone with this link can view and edit the list. Store and transport
+                  settings are included; each person enters their own location.
                 </p>
                 <input
+                    className="field"
                     type="text"
                     readOnly
                     value={shareLink}
                     onFocus={(e) => e.target.select()}
-                    style={{ width: '100%', padding: '8px', boxSizing: 'border-box', marginBottom: '12px' }}
                 />
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <div className="modal-actions">
                   <button
+                      className="button button-secondary"
                       onClick={() => setShareModalOpen(false)}
-                      style={{ padding: '6px 14px', cursor: 'pointer' }}
                   >
                     Close
                   </button>
-                  <button
-                      onClick={handleCopyShareLink}
-                      style={{
-                        padding: '6px 14px', cursor: 'pointer', border: 'none',
-                        borderRadius: '4px', backgroundColor: '#007bff', color: '#fff'
-                      }}
-                  >
-                    {copyStatus === 'copied' ? '✓ Copied!' : copyStatus === 'failed' ? 'Copy failed — select & copy manually' : 'Copy Link'}
+                  <button className="button button-primary" onClick={handleCopyShareLink}>
+                    {copyStatus === 'copied'
+                        ? 'Copied'
+                        : copyStatus === 'failed'
+                            ? 'Copy failed — copy manually'
+                            : 'Copy link'}
                   </button>
                 </div>
               </div>
             </div>
         )}
-
       </div>
   )
 }
