@@ -1,5 +1,6 @@
 // ExportHandler.jsx — FR09: CSV export + print + localStorage persistence
 import { useEffect } from 'react'
+import { ExportIcon, PrintIcon } from './Icons'
 
 // Save latest plans to localStorage so they survive page refresh
 export const savePlansToStorage = (plans) => {
@@ -64,10 +65,12 @@ export default function ExportHandler({ plans }) {
   return (
     <div className="export-toolbar" aria-label="Result actions">
       <button className="export-button" onClick={() => downloadCSV(plans)}>
-        Export CSV
+        <ExportIcon />
+        <span>Export CSV</span>
       </button>
       <button className="export-button" onClick={handlePrint}>
-        Print
+        <PrintIcon />
+        <span>Print</span>
       </button>
     </div>
   )

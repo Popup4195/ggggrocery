@@ -3,7 +3,20 @@ import ComparisonDashboard from './components/ComparisonDashboard'
 import ExportHandler from './components/ExportHandler'
 import { TrueCostChart, CostBreakdownChart, WalkingDistanceChart } from './components/VisualizationHelper'
 import SummaryStats from './components/SummaryStats'
+import {
+  FuelIcon,
+  GenerateIcon,
+  GroceryListIcon,
+  LocationIcon,
+  PlanIcon,
+  RecommendedIcon,
+  ShareIcon,
+  SupermarketIcon,
+  SupermarketLogo,
+  TripIcon
+} from './components/Icons'
 import { getPurchaseSelection } from './utils/purchaseUnit'
+import groceryHero from './assets/grocery-hero.jpg'
 import './App.css'
 
 
@@ -456,15 +469,8 @@ function App() {
   // ========== Helper: get chain name ==========
   const getChainName = (chainId) => {
     const chain = chains.find(c => c.chainId === chainId)
-    return chain ? chain.name : chainId
-  }
-
-  // ========== Helper: rank icon ==========
-  const getRankIcon = (rank) => {
-    if (rank === 1) return '🥇'
-    if (rank === 2) return '🥈'
-    if (rank === 3) return '🥉'
-    return `#${rank}`
+    if (!chain) return chainId
+    return chain.name === 'Countdown' ? 'Woolworths' : chain.name
   }
 
   // ========== Strategy label ==========
@@ -623,20 +629,29 @@ function App() {
   return (
       <div className="app-shell">
         <header className="app-header">
-          <div className="brand-lockup">
-            <p className="eyebrow">Smarter grocery planning</p>
-            <h1 className="app-title">Grocery Saver</h1>
-            <p className="app-subtitle">
-              Build your list, choose your stores, and find the most cost-effective trip.
-            </p>
+          <div className="hero-copy">
+            <div className="brand-lockup">
+              <p className="eyebrow">Smarter grocery planning</p>
+              <h1 className="app-title">Grocery <span>Saver</span></h1>
+              <p className="app-subtitle">
+                Build your list, choose your stores, and find the most cost-effective trip.
+              </p>
+            </div>
+            <div className="hero-actions">
+              <button
+                  className="button button-secondary share-button"
+                  onClick={handleShareList}
+                  disabled={shareLoading}
+              >
+                <ShareIcon />
+                <span>{shareLoading ? 'Creating link…' : 'Share list'}</span>
+              </button>
+            </div>
           </div>
-          <button
-              className="button button-secondary share-button"
-              onClick={handleShareList}
-              disabled={shareLoading}
-          >
-            {shareLoading ? 'Creating link…' : 'Share list'}
-          </button>
+
+          <div className="hero-visual" aria-hidden="true">
+            <img className="hero-image" src={groceryHero} alt="" />
+          </div>
         </header>
 
         {shareError && <div className="status-banner error">{shareError}</div>}
@@ -653,12 +668,11 @@ function App() {
             <section className="panel grocery-panel">
               <div className="panel-header">
                 <div>
-                  <div className="step-label">
+                  <h2 className="panel-title section-heading">
                     <span className="step-number">1</span>
-                    Your list
-                  </div>
-                  <h2 className="panel-title">Grocery List</h2>
-                  <p className="panel-description">Search for each product and set the quantity you need.</p>
+                    <GroceryListIcon />
+                    <span>Grocery List</span>
+                  </h2>
                 </div>
               </div>
 
@@ -780,12 +794,11 @@ function App() {
               <section className="panel">
                 <div className="panel-header">
                   <div>
-                    <div className="step-label">
+                    <h2 className="panel-title section-heading">
                       <span className="step-number">2</span>
-                      Store preferences
-                    </div>
-                    <h2 className="panel-title">Supermarkets</h2>
-                    <p className="panel-description">Choose the chains you want included.</p>
+                      <SupermarketIcon />
+                      <span>Supermarkets</span>
+                    </h2>
                   </div>
                   <span className="selection-count">{selectedChains.length} selected</span>
                 </div>
@@ -802,7 +815,8 @@ function App() {
                                   checked={selectedChains.includes(chain.chainId)}
                                   onChange={() => handleChainToggle(chain.chainId)}
                               />
-                              <span>{chain.name}</span>
+                              <SupermarketLogo name={chain.name} />
+                              <span>{getChainName(chain.chainId)}</span>
                             </label>
 
                             {selectedChains.includes(chain.chainId) && branchesByChain[chain.chainId] && (
@@ -829,12 +843,11 @@ function App() {
               <section className="panel">
                 <div className="panel-header">
                   <div>
-                    <div className="step-label">
+                    <h2 className="panel-title section-heading">
                       <span className="step-number">3</span>
-                      Your trip
-                    </div>
-                    <h2 className="panel-title">Trip Settings</h2>
-                    <p className="panel-description">Set how you travel and where you start.</p>
+                      <TripIcon />
+                      <span>Trip Settings</span>
+                    </h2>
                   </div>
                 </div>
 
@@ -857,7 +870,10 @@ function App() {
 
                 {transportMode === 'driving' ? (
                     <div className="settings-box">
-                      <label className="field-label" htmlFor="fuel-type">Fuel type</label>
+                      <label className="field-label fuel-heading" htmlFor="fuel-type">
+                        <FuelIcon />
+                        <span>Fuel Type</span>
+                      </label>
                       <select
                           className="select-field"
                           id="fuel-type"
@@ -891,7 +907,10 @@ function App() {
                 )}
 
                 <div className="location-block">
-                  <span className="field-label">Starting location</span>
+                  <span className="field-label location-heading">
+                    <LocationIcon />
+                    <span>Starting Location</span>
+                  </span>
                   <div className="location-actions">
                     <button className="button button-secondary" onClick={getUserLocation}>
                       Use my location
@@ -939,6 +958,7 @@ function App() {
                 onClick={generatePlans}
                 disabled={loading}
             >
+              <GenerateIcon />
               {loading
                   ? 'Generating plans…'
                   : transportMode === 'walking'
@@ -951,13 +971,10 @@ function App() {
               <section className="results-section">
                 <div className="results-heading-row">
                   <div>
-                    <p className="eyebrow">Your results</p>
-                    <h2 className="results-title">Shopping Plans</h2>
-                    <p className="results-subtitle">
-                      {plans.length > 1
-                          ? 'The best option is highlighted first. Explore alternatives only when you need them.'
-                          : 'Here is the available plan for your trip.'}
-                    </p>
+                    <h2 className="results-title section-heading results-section-heading">
+                      <PlanIcon />
+                      <span>Shopping Plans</span>
+                    </h2>
                   </div>
                   <ExportHandler plans={plans} />
                 </div>
@@ -973,6 +990,7 @@ function App() {
                   <div className="recommended-main">
                     <div>
                       <span className="recommended-badge">
+                        <RecommendedIcon />
                         {plans.length > 1 ? 'Recommended · Best plan' : 'Your plan'}
                       </span>
                       <h3 className="recommended-title">{getStrategyLabel(bestPlan)}</h3>
@@ -1031,7 +1049,7 @@ function App() {
                             >
                               <div className="alternative-summary">
                                 <div>
-                                  <div className="alternative-rank">{getRankIcon(plan.rank)} Option {plan.rank}</div>
+                                  <div className="alternative-rank">Option {plan.rank}</div>
                                   <h4 className="alternative-name">{getStrategyLabel(plan)}</h4>
                                   <div className="alternative-meta">
                                     <span>Groceries ${plan.groceryTotal.toFixed(2)}</span>
