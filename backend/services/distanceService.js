@@ -5,8 +5,26 @@
 
 const { Client } = require('@googlemaps/google-maps-services-js');
 
+// circuit breaker: after a 403 / REQUEST_DENIED (e.g. invalid or restricted API key),
+// skip Google Maps for this long and go straight to Haversine
+const GOOGLE_CIRCUIT_BREAKER_MS = 10 * 60 * 1000; // 10 minutes
+// per-request timeout for the Distance Matrix call
+const GOOGLE_REQUEST_TIMEOUT_MS = 3000;
+
 // create a Google Maps client
 const googleMapsClient = new Client({});
+
+// timestamp (ms) until which Google Maps calls are skipped
+let googleDisabledUntil = 0;
+
+function isRequestDenied(status, data) {
+    return status === 403 || data?.status === 'REQUEST_DENIED';
+}
+
+function openCircuitBreaker(reason) {
+    googleDisabledUntil = Date.now() + GOOGLE_CIRCUIT_BREAKER_MS;
+    console.warn(`Google Maps request denied (${reason}), using Haversine for the next ${GOOGLE_CIRCUIT_BREAKER_MS / 60000} minutes`);
+}
 
 // haversine formula: calculates the straight-line distance between two points on a sphere
 // returns distance in kilometers
@@ -33,8 +51,8 @@ async function getDistances(userLat, userLng, destinations) {
 
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
 
-    // try Google Maps API first
-    if (apiKey) {
+    // try Google Maps API first (unless the circuit breaker is open)
+    if (apiKey && Date.now() >= googleDisabledUntil) {
         try {
             const origins = [{ lat: userLat, lng: userLng }];
             const dests = destinations.map(d => ({ lat: d.latitude, lng: d.longitude }));
@@ -45,8 +63,14 @@ async function getDistances(userLat, userLng, destinations) {
                     destinations: dests,
                     mode: 'driving',
                     key: apiKey
-                }
+                },
+                timeout: GOOGLE_REQUEST_TIMEOUT_MS
             });
+
+            if (isRequestDenied(response.status, response.data)) {
+                openCircuitBreaker(response.data?.status || response.status);
+                throw new Error('Request denied');
+            }
 
             const rows = response.data.rows[0];
             if (rows && rows.elements) {
@@ -70,6 +94,9 @@ async function getDistances(userLat, userLng, destinations) {
                 });
             }
         } catch (error) {
+            if (Date.now() >= googleDisabledUntil && isRequestDenied(error.response?.status, error.response?.data)) {
+                openCircuitBreaker(error.response?.data?.status || error.response?.status);
+            }
             console.warn('Google Maps API failed, falling back to Haversine:', error.message);
         }
     }

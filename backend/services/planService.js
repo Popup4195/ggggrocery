@@ -242,6 +242,22 @@ async function calculateRouteDistance(userLat, userLng, storeBranches) {
 }
 
 // ================================================================
+// HELPER 3b: 带缓存的路线距离
+// 路线距离只跟"去哪几家店"有关，跟商品怎么分配无关，
+// 所以同一次请求里按店铺集合缓存，分支定界的叶子节点不用反复算（反复调 Google）
+// routeCache: Map，key 是排序后的 chainId 集合，值是 { routeKm, routeOrder }
+// ================================================================
+async function getRouteWithCache(routeCache, chainIds, userLat, userLng, storeBranches) {
+    const key = [...chainIds].sort().join(',');
+    if (routeCache.has(key)) {
+        return routeCache.get(key);
+    }
+    const routeInfo = await calculateRouteDistance(userLat, userLng, storeBranches);
+    routeCache.set(key, routeInfo);
+    return routeInfo;
+}
+
+// ================================================================
 // HELPER 4: 生成数组的所有排列组合
 // 被 calculateRouteDistance 调用，用来试所有商店顺序
 // 纯数学递归，跟业务逻辑没关系
@@ -511,6 +527,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     if (availableChains.length >= 2) {
         // these variables get used inside the recursive function
         let bestUpperBound = upperBound;
+        // route distance per store set, only valid within this request
+        const routeCache = new Map();
 
         // recursive branch and bound function
         async function branchAndBound(
@@ -562,7 +580,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                     longitude: nearestBranches[chainId].longitude
                 }));
 
-                const routeInfo = await calculateRouteDistance(userLat, userLng, storeBranches);
+                const routeInfo = await getRouteWithCache(routeCache, Array.from(storesVisited), userLat, userLng, storeBranches);
                 const fuelCost = Math.round((routeInfo.routeKm / DEFAULT_FUEL_EFFICIENCY) * fuelStation.fuelPrice * 100) / 100;
                 const trueCost = Math.round((currentGroceries + fuelCost) * 100) / 100;
 
@@ -710,4 +728,4 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     return { plans: resultPlans, globallyUnavailableItems: unavailableItems };
 }
 
-module.exports = { generatePlans };
+module.exports = { generatePlans, getRouteWithCache };
