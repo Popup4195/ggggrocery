@@ -56,7 +56,7 @@ function findCardWithPrice($el, $, maxDepth = 8) {
       return $lastCleanNode;
     }
 
-    if (/\d+[.\s]\d{2}\b/.test($node.text())) {
+    if (extractShelfPriceFromText(spacedText($node, $)) !== null) {
       return $node;
     }
 
@@ -104,6 +104,265 @@ function splitNameAndPackSize(rawText) {
   return { name: name || rawText, packSize };
 }
 
+// 换算单价文字，比如 "$1.60/100g"、"$2.80/1L"、"$3.79 / kg"（斜杠两边允许空格）
+const UNIT_PRICE_RE = /\$?\s*(\d+(?:\.\d+)?)\s*\/\s*(\d*(?:\.\d+)?)\s*([a-zA-Z]+)/;
+const UNIT_PRICE_RE_GLOBAL = new RegExp(UNIT_PRICE_RE.source, 'g');
+
+// 规格单位统一写法，跟 Woolworths 数据里的 baseUnit 保持一致（100g / 1kg / 1L / 100mL / 1ea）
+const UNIT_ALIASES = { g: 'g', kg: 'kg', ml: 'mL', l: 'L', ltr: 'L', ea: 'ea', pk: 'pk' };
+
+// 一致性检查的容差：price 折算出的每单位价跟页面上的单位价相差超过 5% 就算可疑
+const UNIT_PRICE_TOLERANCE = 0.05;
+
+/**
+ * 把 "$1.60/100g" 解析成 { unitPrice: 1.6, baseUnit: '100g' }，
+ * "$2.80/1L" → { unitPrice: 2.8, baseUnit: '1L' }，"$3.79/kg" → { unitPrice: 3.79, baseUnit: '1kg' }
+ * 解析不了返回 { unitPrice: null, baseUnit: null }
+ */
+function parseUnitPriceText(raw) {
+  if (!raw) return { unitPrice: null, baseUnit: null };
+  const match = raw.match(UNIT_PRICE_RE);
+  if (!match) return { unitPrice: null, baseUnit: null };
+  const unit = UNIT_ALIASES[match[3].toLowerCase()];
+  if (!unit) return { unitPrice: null, baseUnit: null };
+  const qty = match[2] ? parseFloat(match[2]) : 1;
+  return { unitPrice: parseFloat(match[1]), baseUnit: `${qty}${unit}` };
+}
+
+/**
+ * 把规格/单位换算成基础量：质量统一成克，体积统一成毫升，件数统一成个
+ * "500g" → { amount: 500, dim: 'mass' }，"2l" → { amount: 2000, dim: 'volume' }，
+ * "6 x 250ml" → { amount: 1500, dim: 'volume' }；解析不了返回 null
+ */
+function toBaseQuantity(text) {
+  if (!text) return null;
+  const match = text.trim().match(/^(?:(\d+)\s*x\s*)?(\d*(?:\.\d+)?)\s*([a-zA-Z]+)$/i);
+  if (!match) return null;
+  const count = match[1] ? parseInt(match[1], 10) : 1;
+  const qty = match[2] ? parseFloat(match[2]) : 1;
+  const unit = UNIT_ALIASES[match[3].toLowerCase()];
+  const factors = { g: ['mass', 1], kg: ['mass', 1000], mL: ['volume', 1], L: ['volume', 1000], ea: ['count', 1], pk: ['count', 1] };
+  if (!unit || !factors[unit] || !(qty > 0)) return null;
+  const [dim, factor] = factors[unit];
+  return { amount: count * qty * factor, dim };
+}
+
+/**
+ * 一致性检查：price 和 packSize 都有时，用 price 折算出的每单位价应该跟抓到的单位价基本一致。
+ * 返回 { suspect, reason }；信息不够或量纲对不上（比如按件卖但单位价按克）时不判断，suspect=false
+ */
+function checkUnitPriceConsistency({ price, pricePer, packSize, unitPrice, baseUnit }) {
+  if (price == null || unitPrice == null || !baseUnit) return { suspect: false, reason: null };
+  // 按公斤称重卖的，price 本身就是每公斤价
+  const pack = pricePer === 'kg' ? toBaseQuantity('1kg') : toBaseQuantity(packSize);
+  const base = toBaseQuantity(baseUnit);
+  if (!pack || !base || pack.dim !== base.dim) return { suspect: false, reason: null };
+
+  const expected = (price / pack.amount) * base.amount;
+  const diff = Math.abs(expected - unitPrice) / unitPrice;
+  if (diff <= UNIT_PRICE_TOLERANCE) return { suspect: false, reason: null };
+  return {
+    suspect: true,
+    reason: `price ${price}/${pricePer === 'kg' ? 'kg' : packSize} → ${expected.toFixed(2)}/${baseUnit}, page says ${unitPrice}/${baseUnit} (${(diff * 100).toFixed(1)}% off)`
+  };
+}
+
+/**
+ * 跟 $node.text() 一样取文字，但每个文本节点之间加空格，
+ * 避免 "7" "99" "ea" 被拼成 "799ea" 这种分不开的样子
+ */
+function spacedText($node, $) {
+  const parts = [];
+  const walk = (nodes) => {
+    nodes.each((_, n) => {
+      if (n.type === 'text') {
+        const t = $(n).text().trim();
+        if (t) parts.push(t);
+      } else if (n.type === 'tag' && n.name !== 'script' && n.name !== 'style') {
+        walk($(n).contents());
+      }
+    });
+  };
+  walk($node);
+  return parts.join(' ');
+}
+
+/**
+ * 文本兜底方案：先把 "$x.xx/单位" 这种单位价片段删掉，再找货架价。
+ * 货架价允许整数和小数之间有空白或小数点（"7 99"、"7.99"、"$7 . 99"），
+ * 整数前面要么是开头、空白或 $，后面跟空白/结尾/ea/kg，避免把 "500g" 里的 500 当成价格
+ */
+function extractShelfPriceFromText(text) {
+  if (!text) return null;
+  const stripped = text.replace(UNIT_PRICE_RE_GLOBAL, ' ');
+  const match = stripped.match(/(?:^|[\s$])(\d+)\s*[.\s]\s*(\d{2})(?=\s|$|ea\b|kg\b)/i);
+  return match ? parseFloat(`${match[1]}.${match[2]}`) : null;
+}
+
+/**
+ * 从一张商品卡片（data-testid="product-<id>-EA-000"）里按 data-testid 取值。
+ * 取不到货架价元素时退回文本方案，并打印警告。
+ */
+function parseProductCard($card, $, chainKey, categoryLabel) {
+  const testId = $card.attr('data-testid') || '';
+  const href = $card.find('a[href*="/shop/product/"]').first().attr('href') || '';
+  const hrefMatch = href.match(/\/shop\/product\/(\d+)_([a-z]+)_([a-z0-9]+)/i);
+  const idMatch = testId.match(/^product-(\d+)-([A-Za-z]+)-/);
+  const productId = hrefMatch ? hrefMatch[1] : idMatch ? idMatch[1] : null;
+  const unit = hrefMatch ? hrefMatch[2].toLowerCase() : idMatch ? idMatch[2].toLowerCase() : null;
+  if (!productId) return null;
+
+  const name = $card.find('[data-testid="product-title"]').first().text().trim() || nameFromUrlSlug(href);
+  const packSize = $card.find('[data-testid="product-subtitle"]').first().text().trim() || null;
+
+  // 货架价：整数和小数是分开的两个元素
+  const dollars = $card.find('[data-testid="price-dollars"]').first().text().trim();
+  const cents = $card.find('[data-testid="price-cents"]').first().text().trim();
+  const pricePer = $card.find('[data-testid="price-per"]').first().text().trim().toLowerCase() || null;
+  let price = null;
+  if (/^\d+$/.test(dollars) && /^\d{2}$/.test(cents)) {
+    price = parseFloat(`${dollars}.${cents}`);
+  } else {
+    price = extractShelfPriceFromText(spacedText($card, $));
+    console.warn(`[scrapeFoodstuffs] ${productId} "${name}": price elements not found, text fallback → ${price}`);
+  }
+
+  // 换算单价："$1.60/100g"
+  const unitPriceRaw = $card.find('[data-testid="non-promo-unit-price"]').first().text().trim();
+  let { unitPrice, baseUnit } = parseUnitPriceText(unitPriceRaw);
+  if (unitPrice === null) {
+    ({ unitPrice, baseUnit } = parseUnitPriceText(spacedText($card, $)));
+    if (unitPrice !== null) {
+      console.warn(`[scrapeFoodstuffs] ${productId} "${name}": unit price element not found, text fallback → ${unitPrice}/${baseUnit}`);
+    }
+  }
+
+  const { suspect, reason } = checkUnitPriceConsistency({ price, pricePer, packSize, unitPrice, baseUnit });
+  if (suspect) {
+    console.warn(`[scrapeFoodstuffs] SUSPECT ${productId} "${name}" ${packSize || ''}: ${reason}`);
+  }
+
+  const rawImageUrl = $card.find('img').first().attr('src') || null;
+  const imageUrl = rawImageUrl && rawImageUrl.includes(productId) ? rawImageUrl : null;
+
+  const chain = CHAINS[chainKey];
+  return {
+    productId,
+    unit,
+    name,
+    packSize,
+    price,
+    unitPrice,
+    baseUnit,
+    suspect,
+    suspectReason: reason,
+    category: categoryLabel,
+    imageUrl,
+    sourceUrl: chain ? chain.baseUrl + href : href,
+    chain: chainKey,
+    scrapedAt: new Date().toISOString(), // 对应 NFR-D1 的 updatedAt
+  };
+}
+
+/**
+ * 旧的文本方案：按商品链接往上找卡片，从卡片文字里抠价格。
+ * 只在页面上找不到 data-testid 商品卡片时才用（页面结构变了的兜底）。
+ */
+function parseByProductLinks($, chainKey, categoryLabel) {
+  const chain = CHAINS[chainKey];
+  const products = [];
+
+  // 商品详情页链接格式: /shop/product/{productId}_{unit}_{storeCode}?name={slug}
+  // 例如: /shop/product/5028110_ea_000nw?name=avocado
+  $('a[href*="/shop/product/"]').each((_, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+
+    const match = href.match(/\/shop\/product\/(\d+)_([a-z]+)_([a-z0-9]+)/i);
+    if (!match) return;
+
+    const [, productId, unit] = match;
+
+    // 从这个链接往上爬，找到真正包含价格的祖先节点（不再只固定找最近一层）
+    const $card = findCardWithPrice($(el), $);
+    const cardText = spacedText($card, $);
+
+    // 先删掉单位价片段，再找货架价（整数和小数之间允许空白）
+    const price = extractShelfPriceFromText(cardText);
+    const { unitPrice, baseUnit } = parseUnitPriceText(cardText);
+
+    // 商品名：优先用链接自身可见文字（更精确，规格能拆得干净）；
+    // 如果链接文字是空的（这次实测发现 New World 有些卡片就是这样），
+    // 退回用链接里的 ?name=xxx 参数兜底，保证 name 不会是空的
+    const rawText = $(el).text().trim();
+    const { name: nameFromText, packSize } = splitNameAndPackSize(rawText);
+    const name = nameFromText || nameFromUrlSlug(href);
+
+    const { suspect, reason } = checkUnitPriceConsistency({ price, pricePer: null, packSize, unitPrice, baseUnit });
+    if (suspect) {
+      console.warn(`[scrapeFoodstuffs] SUSPECT ${productId} "${name}" ${packSize || ''}: ${reason}`);
+    }
+
+    // 图片：找卡片内第一张 <img> 的 src。
+    // 多加一道保险：图片文件名里通常带商品编号（比如 5028110.png），
+    // 如果这个编号跟当前商品的 productId 对不上，说明抓错了（大概率是越界抓到邻居的图），
+    // 宁可留空也不要存错的数据
+    const rawImageUrl = $card.find('img').first().attr('src') || null;
+    const imageUrl = rawImageUrl && rawImageUrl.includes(productId) ? rawImageUrl : null;
+
+    if (productId && price !== null) {
+      products.push({
+        productId,
+        unit,
+        name,
+        packSize,
+        price,
+        unitPrice,
+        baseUnit,
+        suspect,
+        suspectReason: reason,
+        category: categoryLabel,
+        imageUrl,
+        sourceUrl: chain.baseUrl + href,
+        chain: chainKey,
+        scrapedAt: new Date().toISOString(), // 对应 NFR-D1 的 updatedAt
+      });
+    }
+  });
+  return products;
+}
+
+/**
+ * 解析一个分类页的 HTML（不联网，方便离线测试/干跑）
+ * 优先按 data-testid="product-<id>-EA-000" 的商品卡片取值；
+ * 页面上一张这种卡片都没有时，才退回旧的按商品链接 + 文本的方案
+ */
+function parseCategoryHtml(html, chainKey, categoryLabel = null) {
+  const $ = cheerio.load(html);
+  const $cards = $('div[itemtype*="schema.org/Product"][data-testid^="product-"]');
+
+  let products;
+  if ($cards.length > 0) {
+    products = [];
+    $cards.each((_, el) => {
+      const product = parseProductCard($(el), $, chainKey, categoryLabel);
+      if (product && product.price !== null) products.push(product);
+    });
+  } else {
+    console.warn('[scrapeFoodstuffs] no data-testid product cards found, falling back to text parsing');
+    products = parseByProductLinks($, chainKey, categoryLabel);
+  }
+
+  // 去重：同一个商品可能因为促销/推荐区块在页面里重复出现
+  const seen = new Set();
+  return products.filter((p) => {
+    const key = `${p.productId}_${p.unit}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /**
  * 抓一个分类页，返回这一页所有商品
  *
@@ -134,77 +393,7 @@ async function scrapeCategoryPage(chainKey, categoryUrl, categoryLabel = null) {
     timeout: 15000,
   });
 
-  const $ = cheerio.load(res.data);
-  const products = [];
-
-  // 商品详情页链接格式: /shop/product/{productId}_{unit}_{storeCode}?name={slug}
-  // 例如: /shop/product/5028110_ea_000nw?name=avocado
-  $('a[href*="/shop/product/"]').each((_, el) => {
-    const href = $(el).attr('href');
-    if (!href) return;
-
-    const match = href.match(/\/shop\/product\/(\d+)_([a-z]+)_([a-z0-9]+)/i);
-    if (!match) return;
-
-    const [, productId, unit] = match;
-
-    // 从这个链接往上爬，找到真正包含价格的祖先节点（不再只固定找最近一层）
-    const $card = findCardWithPrice($(el), $);
-    const cardText = $card.text();
-
-    // 价格通常形如 "7.39" 或 "7 39"（取决于页面渲染方式），
-    // 用正则从卡片文本里抓第一个看起来像价格的数字
-    const priceMatch = cardText.match(/\$?(\d+)[.\s](\d{2})\b/);
-    const price = priceMatch ? parseFloat(`${priceMatch[1]}.${priceMatch[2]}`) : null;
-
-    // 换算单价：页面上像 "$3.79/1kg"、"$1.25/ea" 这种，专门用来跨商品比较的折算价。
-    // 跟主价格的区别是它后面一定跟着 "/单位"，用这个特征区分开，不会跟主价格混。
-    const unitPriceMatch = cardText.match(/\$?(\d+\.\d{2})\/([a-zA-Z0-9.]+)/);
-    const unitPrice = unitPriceMatch ? parseFloat(unitPriceMatch[1]) : null;
-    const baseUnit = unitPriceMatch ? unitPriceMatch[2] : null;
-
-    // 商品名：优先用链接自身可见文字（更精确，规格能拆得干净）；
-    // 如果链接文字是空的（这次实测发现 New World 有些卡片就是这样），
-    // 退回用链接里的 ?name=xxx 参数兜底，保证 name 不会是空的
-    const rawText = $(el).text().trim();
-    const { name: nameFromText, packSize } = splitNameAndPackSize(rawText);
-    const name = nameFromText || nameFromUrlSlug(href);
-
-    // 图片：找卡片内第一张 <img> 的 src。
-    // 多加一道保险：图片文件名里通常带商品编号（比如 5028110.png），
-    // 如果这个编号跟当前商品的 productId 对不上，说明抓错了（大概率是越界抓到邻居的图），
-    // 宁可留空也不要存错的数据
-    const rawImageUrl = $card.find('img').first().attr('src') || null;
-    const imageUrl = rawImageUrl && rawImageUrl.includes(productId) ? rawImageUrl : null;
-
-    if (productId && price !== null) {
-      products.push({
-        productId,
-        unit,
-        name,
-        packSize,
-        price,
-        unitPrice,
-        baseUnit,
-        category: categoryLabel,
-        imageUrl,
-        sourceUrl: chain.baseUrl + href,
-        chain: chainKey,
-        scrapedAt: new Date().toISOString(), // 对应 NFR-D1 的 updatedAt
-      });
-    }
-  });
-
-  // 去重：同一个商品可能因为促销/推荐区块在页面里重复出现
-  const seen = new Set();
-  const deduped = products.filter((p) => {
-    const key = `${p.productId}_${p.unit}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  return deduped;
+  return parseCategoryHtml(res.data, chainKey, categoryLabel);
 }
 
 /**
@@ -313,4 +502,13 @@ async function scrapeMultipleCategories(chainKey, categoryUrls, useAllPages = tr
   });
 }
 
-module.exports = { scrapeCategoryPage, scrapeAllPages, scrapeMultipleCategories, CHAINS };
+module.exports = {
+  scrapeCategoryPage,
+  scrapeAllPages,
+  scrapeMultipleCategories,
+  parseCategoryHtml,
+  parseUnitPriceText,
+  checkUnitPriceConsistency,
+  extractShelfPriceFromText,
+  CHAINS,
+};
