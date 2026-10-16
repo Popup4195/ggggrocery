@@ -14,8 +14,10 @@
 const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
+const { filterBranchesBySelection } = require('./branchSelection');
+const { comparePlans, initialUpperBound } = require('./planRanking');
 const { getGroceryTotal } = require('./trueCostService');
-const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
+const { buildNameOrConditions, findCandidates, pickBestMatch, mergeConfirmedCandidates } = require('./productNameMatch');
 
 // 默认值，跟 fr17 保持一致
 const DEFAULT_FUEL_EFFICIENCY = 10; // km/L, 新西兰平均油耗
@@ -26,16 +28,17 @@ const DEFAULT_FUEL_PRICE = 2.80;    // 如果数据库里没加油站数据就�
 // 同一品牌在不同分店的价格是一样的
 // 所以我们选最近的那家，省得开车跑远路
 // ================================================================
-async function findNearestBranches(supermarkets, userLat, userLng) {
+async function findNearestBranches(supermarkets, userLat, userLng, allowedBranchIds) {
     // supermarkets 就是用户选的品牌列表，比如 ['paknsave', 'newworld', 'countdown']
+    // allowedBranchIds 可选：用户手动勾选的分店，只在这些分店里找最近的；不传就是所有分店
     const nearestBranches = {};
 
     for (const chainId of supermarkets) {
-        const branches = await Branch.find({
+        const branches = filterBranchesBySelection(await Branch.find({
             chainId: chainId,
             type: 'supermarket',
             isActive: true
-        });
+        }), allowedBranchIds);
 
         if (branches.length === 0) continue;
 
@@ -289,7 +292,7 @@ function getPermutations(arr) {
 async function getCheapestPrices(items, supermarkets) {
     // 用包含匹配而不是精确匹配（跟主函数 generatePlans 里的逻辑保持一致，
     // 避免这个函数以后被重新启用时又踩一遍"爬虫具体商品名 vs 用户简单输入"匹配不上的坑）
-    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    const orConditions = buildNameOrConditions(items.flatMap(item => item.confirmedName ? [item.name, item.confirmedName] : [item.name]));
     const priceDocs = orConditions.length > 0
         ? await PriceSnapshot.find({ $or: orConditions, chainId: { $in: supermarkets } }).lean()
         : [];
@@ -299,7 +302,7 @@ async function getCheapestPrices(items, supermarkets) {
         const name = item.name.toLowerCase().trim();
         let cheapest = Infinity;
         for (const chainId of supermarkets) {
-            const best = pickBestMatch(findCandidates(priceDocs, item.name, chainId), item.name, item.category, item.confirmedName);
+            const best = pickBestMatch(mergeConfirmedCandidates(priceDocs, item.name, chainId, item.confirmedName), item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null && best.unitPrice < cheapest) {
                 cheapest = best.unitPrice;
             }
@@ -335,11 +338,11 @@ async function getItemPrice(itemName, chainId) {
 // 4. 递归尝试所有分配方案，把不可能比上界好的分支剪掉
 // 5. 返回前 10 个方案，按真实成本排序
 // ================================================================
-async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }) {
+async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, allowedBranchIds }) {
     // ==================== 第一阶段：预加载数据 ====================
 
-    // 第1步: 找每个超市连锁离用户最近的分店
-    const nearestBranches = await findNearestBranches(supermarkets, userLat, userLng);
+    // 第1步: 找每个超市连锁离用户最近的分店（如果用户勾选了分店，只在勾选的里面找）
+    const nearestBranches = await findNearestBranches(supermarkets, userLat, userLng, allowedBranchIds);
 
     // 只保留有分店的品牌
     const availableChains = Object.keys(nearestBranches);
@@ -368,7 +371,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         imageUrlMap[chainId] = {};
     }
 
-    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    // 用户从下拉框选中的具体商品名（confirmedName）也参与预取，否则 "cabb" 这种半截词查不到它
+    const orConditions = buildNameOrConditions(items.flatMap(item => item.confirmedName ? [item.name, item.confirmedName] : [item.name]));
     const allPrices = orConditions.length > 0
         ? await PriceSnapshot.find({
             $or: orConditions,
@@ -379,7 +383,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
     for (const item of items) {
         const name = item.name.toLowerCase().trim();
         for (const chainId of availableChains) {
-            const best = pickBestMatch(findCandidates(allPrices, item.name, chainId), item.name, item.category, item.confirmedName);
+            const best = pickBestMatch(mergeConfirmedCandidates(allPrices, item.name, chainId, item.confirmedName), item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null) {
                 priceMap[chainId][name] = best.unitPrice;
                 matchedNameMap[chainId][name] = best.productName;
@@ -415,7 +419,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
             cheapestPrices[name] = cheapest;
             availableItems.push(item);
         } else {
-            unavailableItems.push(item.name);
+            // 显示用户选中的具体商品名，而不是 "cabb" 这种半截词
+            unavailableItems.push(item.confirmedName || item.name);
         }
     }
 
@@ -463,7 +468,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
                     imageUrl: imageUrlMap[chainId]?.[name] || null
                 });
             } else {
-                missingAtThisStore.push(item.name);
+                missingAtThisStore.push(item.confirmedName || item.name);
             }
         }
 
@@ -515,11 +520,11 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         };
 
         allPlans.push(plan);
-
-        if (trueCost < upperBound) {
-            upperBound = trueCost;
-        }
     }
+
+    // 上界只能来自买得全的单店方案：缺商品的单店方案"少买了东西"所以偏便宜，
+    // 拿它当上界会把能买全的多店方案剪掉
+    upperBound = initialUpperBound(allPlans, availableItems.length);
 
     // ==================== PHASE 3: Branch and Bound search ====================
 
@@ -712,8 +717,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }
         }
     }
 
-    // sort by true cost (cheapest first)
-    uniquePlans.sort((a, b) => a.trueCost - b.trueCost);
+    // sort by missing items first (fewest first), then by true cost (cheapest first)
+    uniquePlans.sort(comparePlans('trueCost'));
 
     // assign ranks
     uniquePlans.forEach((plan, index) => {

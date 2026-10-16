@@ -302,4 +302,28 @@ function pickBestMatch(candidates, userInputName, preferredCategory, preferredEx
     return tier[0];
 }
 
-module.exports = { escapeRegex, buildNameOrConditions, findCandidates, pickBestMatch };
+/**
+ * 在原来的宽松词候选基础上，补上"跟用户选中的具体商品完全同名"的记录。
+ *
+ * 背景：用户打 "cabb" 再从下拉框选 "fresh vegetable cabbage green half"，
+ * 前端发的 name 还是 "cabb"，整词匹配对不上 "cabbage"，候选为 0，
+ * confirmedName 在 pickBestMatch 里根本没机会生效，结果报"无价格"。
+ *
+ * 原候选排在前面、同名记录追加在后面（按对象去重），confirmedName 为空时
+ * 直接返回 findCandidates 的结果，行为完全不变。
+ */
+function mergeConfirmedCandidates(docs, userInputName, chainId, confirmedName) {
+    const candidates = findCandidates(docs, userInputName, chainId);
+    const confirmed = (confirmedName || '').toLowerCase().trim();
+    if (!confirmed) return candidates;
+
+    const seen = new Set(candidates);
+    const exact = docs.filter(doc =>
+        doc.chainId === chainId &&
+        !seen.has(doc) &&
+        doc.productName.toLowerCase().trim() === confirmed
+    );
+    return exact.length > 0 ? [...candidates, ...exact] : candidates;
+}
+
+module.exports = { escapeRegex, buildNameOrConditions, findCandidates, pickBestMatch, mergeConfirmedCandidates };

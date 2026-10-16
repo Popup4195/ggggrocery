@@ -10,11 +10,13 @@
 const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
+const { filterBranchesBySelection } = require('./branchSelection');
+const { comparePlans } = require('./planRanking');
 // 复用 planService.js 也在用的同一套匹配逻辑（整词匹配 + 品类优先级 +
 // "一模一样优先"），而不是之前那种精确匹配（$in），否则用户打的宽松词
 // （比如 "bread"）在这里永远查不到东西，因为库里存的是具体商品名
 // （比如 "Vogel's Bread 700g"），根本不会完全相等。
-const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
+const { buildNameOrConditions, pickBestMatch, mergeConfirmedCandidates } = require('./productNameMatch');
 
 // 默认步行上限（公里），用户可以在 slider 里调
 const DEFAULT_WALKING_MAX_KM = 2.0;
@@ -37,8 +39,9 @@ function estimateWalkingTime(distanceKm) {
 //   supermarkets: [chainId, ...]
 //   userLat, userLng: 用户坐标
 //   walkingMaxKm: 步行上限，默认 2km
+//   allowedBranchIds: 可选，用户手动勾选的分店；不传就是该品牌所有分店
 // ================================================================
-async function generateWalkingPlans({ items, supermarkets, userLat, userLng, walkingMaxKm }) {
+async function generateWalkingPlans({ items, supermarkets, userLat, userLng, walkingMaxKm, allowedBranchIds }) {
     const maxKm = walkingMaxKm || DEFAULT_WALKING_MAX_KM;
 
     // ==================== PHASE 1: 找步行可达的分店 ====================
@@ -47,11 +50,11 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
     const reachableBranches = {};  // chainId -> { branchInfo, distance }
 
     for (const chainId of supermarkets) {
-        const branches = await Branch.find({
+        const branches = filterBranchesBySelection(await Branch.find({
             chainId: chainId,
             type: 'supermarket',
             isActive: true
-        });
+        }), allowedBranchIds);
 
         if (branches.length === 0) continue;
 
@@ -118,7 +121,8 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
 
     // 一次性预取所有"可能相关"的候选记录（宽松的 $or regex，不是精确匹配），
     // 真正判断"算不算命中"交给 findCandidates 做整词匹配。
-    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    // 用户从下拉框选中的具体商品名（confirmedName）也参与预取，否则 "cabb" 这种半截词查不到它
+    const orConditions = buildNameOrConditions(items.flatMap(item => item.confirmedName ? [item.name, item.confirmedName] : [item.name]));
     const priceDocs = orConditions.length > 0
         ? await PriceSnapshot.find({
             $or: orConditions,
@@ -129,7 +133,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
     for (const chainId of availableChains) {
         for (const item of items) {
             const name = item.name.toLowerCase().trim();
-            const candidates = findCandidates(priceDocs, item.name, chainId);
+            const candidates = mergeConfirmedCandidates(priceDocs, item.name, chainId, item.confirmedName);
             const best = pickBestMatch(candidates, item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null) {
                 priceMap[chainId][name] = best.unitPrice;
@@ -151,7 +155,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
             const price = priceMap[chainId]?.[name];
             return price !== undefined && price !== null;
         });
-        if (!foundAnywhere) unavailableItems.push(item.name);
+        if (!foundAnywhere) unavailableItems.push(item.confirmedName || item.name);
     }
 
     // ==================== PHASE 3: 生成方案 ====================
@@ -185,7 +189,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                 });
             } else {
                 hasMissing = true;  // 查不到价格，标记一下
-                missingAtThisStore.push(item.name);
+                missingAtThisStore.push(item.confirmedName || item.name);
             }
         }
 
@@ -321,7 +325,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                 );
                 const missingAtThisSplit = items
                     .filter(item => !includedNames.has(item.name.toLowerCase()))
-                    .map(item => item.name);
+                    .map(item => item.confirmedName || item.name);
 
                 // 步行路线: 家 → 近的那个 → 远的那个 → 家
                 // 按距离排序，先近后远
@@ -404,8 +408,8 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
 
     // ==================== PHASE 4: 排序 + 返回 ====================
 
-    // 按总价从低到高排
-    allPlans.sort((a, b) => a.groceryTotal - b.groceryTotal);
+    // 先按缺失商品数从少到多，再按总价从低到高排
+    allPlans.sort(comparePlans('groceryTotal'));
 
     // 去重，一样的方案只保留一个（相同 strategy + chain 组合 + 总价）
     const uniquePlans = [];
