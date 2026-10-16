@@ -51,6 +51,45 @@ function App() {
   const [plans, setPlans] = useState([])
   const [globallyUnavailableItems, setGloballyUnavailableItems] = useState([])
 
+  // Keep navigation inside App so changing pages preserves inputs and shared-list effects.
+  const [page, setPage] = useState('planning')
+  const pageHeadingRef = useRef(null)
+  const isResultsPage = page === 'results' && plans.length > 0
+
+  useEffect(() => {
+    const handlePageChange = () => {
+      const nextPage = window.location.hash === '#/results'
+          ? 'results'
+          : 'planning'
+      const hash = `#/${nextPage}`
+      if (window.location.hash !== hash) {
+        // Keep the query (including ?list=) intact when normalising the route.
+        window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${hash}`)
+      }
+      setPage(nextPage)
+    }
+
+    handlePageChange()
+    window.addEventListener('hashchange', handlePageChange)
+    return () => window.removeEventListener('hashchange', handlePageChange)
+  }, [])
+
+  useEffect(() => {
+    if (page === 'results' && plans.length === 0) {
+      // Check committed state so a successful request can update plans before this guard.
+      // Replacing only the hash also notifies the listener without adding history.
+      window.location.replace(`${window.location.pathname}${window.location.search}#/planning`)
+    }
+  }, [page, plans.length])
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+      pageHeadingRef.current?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [isResultsPage])
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -352,13 +391,16 @@ function App() {
       })
       if (!res.ok) throw new Error('Failed to create shareable list')
       const data = await res.json()
-      const link = `${window.location.origin}${window.location.pathname}?list=${data.id}`
-      setShareLink(link)
+      const sharedUrl = new URL(window.location.href)
+      sharedUrl.searchParams.set('list', data.id)
       setSharedListId(data.id) // future edits now also sync to this new list
       // Move the address bar to the shared URL too, so refreshing this same tab
       // reloads (and keeps polling) the shared list instead of falling back to
       // local session state.
-      window.history.replaceState(null, '', `${window.location.pathname}?list=${data.id}`)
+      window.history.replaceState(window.history.state, '', sharedUrl.href)
+      // Recipients always start with the editable list, even if this tab has navigated.
+      sharedUrl.hash = '/planning'
+      setShareLink(sharedUrl.href)
       setShareModalOpen(true)
     } catch (err) {
       console.error('Failed to create share link:', err)
@@ -453,9 +495,13 @@ function App() {
         setError(data.message)
         setPlans([])
       } else {
-        setPlans(data.plans || data) // fallback for old format
+        const generatedPlans = data.plans || data // fallback for old format
+        setPlans(generatedPlans)
         // FR05: items that had no price data at ANY selected store, across all plans
         setGloballyUnavailableItems(data.globallyUnavailableItems || [])
+        if (Array.isArray(generatedPlans) && generatedPlans.length > 0) {
+          window.location.hash = '/results'
+        }
       }
     } catch (err) {
       console.error('Plan generation error:', err)
@@ -627,12 +673,16 @@ function App() {
   // RENDER
   // ================================================================
   return (
-      <div className="app-shell">
+      <div className={`app-shell${isResultsPage ? ' results-page' : ''}`}>
+        {!isResultsPage && (
+          <Fragment>
         <header className="app-header">
           <div className="hero-copy">
             <div className="brand-lockup">
               <p className="eyebrow">Smarter grocery planning</p>
-              <h1 className="app-title">Grocery <span>Saver</span></h1>
+              <h1 className="app-title" id="planning-title" ref={pageHeadingRef} tabIndex={-1}>
+                Grocery <span>Saver</span>
+              </h1>
               <p className="app-subtitle">
                 Build your list, choose your stores, and find the most cost-effective trip.
               </p>
@@ -663,7 +713,7 @@ function App() {
             </div>
         )}
 
-        <main>
+        <main aria-labelledby="planning-title">
           <div className="planner-grid">
             <section className="panel grocery-panel">
               <div className="panel-header">
@@ -967,17 +1017,34 @@ function App() {
             </button>
           </div>
 
-          {bestPlan && (
+        </main>
+          </Fragment>
+        )}
+
+          {isResultsPage && bestPlan && (
+            <main aria-labelledby="results-title">
               <section className="results-section">
-                <div className="results-heading-row">
-                  <div>
-                    <h2 className="results-title section-heading results-section-heading">
-                      <PlanIcon />
-                      <span>Shopping Plans</span>
-                    </h2>
+                <header className="results-page-header">
+                  <div className="results-navigation">
+                    <button
+                        className="button button-secondary back-to-planning"
+                        onClick={() => { window.location.hash = '/planning' }}
+                    >
+                      <span aria-hidden="true">←</span>
+                      <span>Back to planning</span>
+                    </button>
+                    <span className="results-brand">Grocery <span>Saver</span></span>
                   </div>
-                  <ExportHandler plans={plans} />
-                </div>
+                  <div className="results-heading-row">
+                    <div>
+                      <h1 className="results-title section-heading results-section-heading" id="results-title" ref={pageHeadingRef} tabIndex={-1}>
+                        <PlanIcon />
+                        <span>Shopping Plans</span>
+                      </h1>
+                    </div>
+                    <ExportHandler plans={plans} />
+                  </div>
+                </header>
 
                 {globallyUnavailableItems.length > 0 && (
                     <div className="warning-banner">
@@ -1093,8 +1160,8 @@ function App() {
                     </details>
                 )}
               </section>
+            </main>
           )}
-        </main>
 
         {shareModalOpen && (
             <div className="modal-backdrop" onClick={() => setShareModalOpen(false)}>
