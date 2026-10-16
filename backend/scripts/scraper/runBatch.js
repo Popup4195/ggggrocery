@@ -50,11 +50,11 @@ const BASE_URLS = {
  */
 async function runBatchForChain(chainKey) {
     if (!chainKey || !BASE_URLS[chainKey]) {
-        throw new Error('chainKey 必须是 newworld 或 paknsave');
+        throw new Error('chainKey must be newworld or paknsave');
     }
 
     const orderedCategories = rotateByDate(CATEGORIES);
-    console.log(`今天的抓取顺序: ${orderedCategories.map((c) => c.label).join(' -> ')}`);
+    console.log(`Today's category order: ${orderedCategories.map((c) => c.label).join(' -> ')}`);
     const categoryUrls = orderedCategories.map(({ path, label }) => ({
         url: `${BASE_URLS[chainKey]}${path}?pg=1`,
         label,
@@ -66,7 +66,7 @@ async function runBatchForChain(chainKey) {
     fs.writeFileSync(outFile, JSON.stringify(products, null, 2), 'utf-8');
 
     console.log(`\n========================================`);
-    console.log(`共抓到 ${products.length} 个商品，已存到 ${outFile}`);
+    console.log(`Scraped ${products.length} products in total, saved to ${outFile}`);
     console.log(`========================================`);
 
     return { chainKey, outFile, count: products.length };
@@ -76,11 +76,11 @@ async function runBatchForChain(chainKey) {
 if (require.main === module) {
     const chainKey = process.argv[2];
     if (!chainKey || !BASE_URLS[chainKey]) {
-        console.error('用法: node runBatch.js <newworld|paknsave>');
+        console.error('Usage: node runBatch.js <newworld|paknsave>');
         process.exit(1);
     }
     runBatchForChain(chainKey).catch((err) => {
-        console.error('批量抓取失败:', err.message);
+        console.error('Batch scrape failed:', err.message);
         process.exit(1);
     });
 }

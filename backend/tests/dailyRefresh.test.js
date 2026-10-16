@@ -17,14 +17,18 @@ function runDailyRefresh(scenario) {
 test('a chain with 0 products exits with code 1 and reports the HTTP statuses', () => {
     const r = runDailyRefresh('paknsave:0:403,403,403;newworld:5:200,200');
     assert.strictEqual(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stderr, /\[paknsave\] 错误: 抓到 0 个商品，可能被网站拒绝/);
-    assert.match(r.stdout, /\[paknsave\] HTTP 状态码: 403 x3/);
-    assert.match(r.stdout, /\[newworld\] HTTP 状态码: 200 x2/);
-    assert.match(r.stdout, /汇总: paknsave: 0 个商品 \[403 x3\] \| newworld: 5 个商品 \[200 x2\]/);
+    assert.match(r.stderr, /\[paknsave\] ERROR: 0 products scraped, the site may be rejecting requests/);
+    assert.match(r.stdout, /\[paknsave\] HTTP status codes: 403 x3/);
+    assert.match(r.stdout, /\[newworld\] HTTP status codes: 200 x2/);
+    assert.match(r.stdout, /Summary: paknsave: 0 products \[403 x3\] \| newworld: 5 products \[200 x2\]/);
+    assert.match(r.stderr, /Daily refresh has failed chains: paknsave; setting exit code to 1/);
+    // the whole log should be English (no CJK characters)
+    assert.doesNotMatch(r.stdout + r.stderr, /[　-〿一-鿿＀-￯]/);
 });
 
 test('all chains with products exits with code 0', () => {
     const r = runDailyRefresh('paknsave:3:200;newworld:5:200,200');
     assert.strictEqual(r.status, 0, r.stdout + r.stderr);
-    assert.doesNotMatch(r.stderr, /抓到 0 个商品/);
+    assert.doesNotMatch(r.stderr, /0 products scraped/);
+    assert.doesNotMatch(r.stderr, /failed chains/);
 });

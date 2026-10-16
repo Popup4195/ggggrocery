@@ -381,7 +381,7 @@ function parseCategoryHtml(html, chainKey, categoryLabel = null) {
  */
 async function scrapeCategoryPage(chainKey, categoryUrl, categoryLabel = null) {
   const chain = CHAINS[chainKey];
-  if (!chain) throw new Error(`未知超市: ${chainKey}，只能是 newworld 或 paknsave`);
+  if (!chain) throw new Error(`Unknown supermarket: ${chainKey}; must be newworld or paknsave`);
 
   const res = await axios.get(categoryUrl, {
     headers: {
@@ -426,19 +426,19 @@ async function scrapeAllPages(chainKey, baseCategoryUrl, maxPages = 50, category
         if (is429 && retriesLeft > 0) {
           retriesLeft--;
           const waitSeconds = Math.round((90000 + Math.random() * 90000) / 1000);
-          console.log(`第 ${page} 页被限速(429)，等待约 ${waitSeconds} 秒后重试（剩余重试次数: ${retriesLeft}）...`);
+          console.log(`Page ${page} rate-limited (429), retrying in about ${waitSeconds} seconds (retries left: ${retriesLeft})...`);
           await randomDelay(90000, 180000); // 90-180 秒随机，比之前的固定30秒更保守
           continue;
         }
-        console.error(`第 ${page} 页抓取失败，停止翻页: ${err.message}`);
+        console.error(`Page ${page} failed, stopping pagination: ${err.message}`);
         return all; // 放弃这个分类剩下的页，但已经抓到的数据照样返回，不会丢
       }
     }
     if (pageProducts.length === 0) {
-      console.log(`第 ${page} 页没有商品了，翻页结束`);
+      console.log(`Page ${page} has no products, pagination finished`);
       break;
     }
-    console.log(`第 ${page} 页抓到 ${pageProducts.length} 个商品`);
+    console.log(`Page ${page}: scraped ${pageProducts.length} products`);
     all.push(...pageProducts);
     if (page < maxPages) {
       await randomDelay(3000, 7000); // 每页之间随机歇 3-7 秒，不用固定数字
@@ -453,7 +453,7 @@ async function scrapeAllPages(chainKey, baseCategoryUrl, maxPages = 50, category
 if (require.main === module) {
   const [, , chainKey, categoryUrl, flag] = process.argv;
   if (!chainKey || !categoryUrl) {
-    console.error('用法: node scrapeFoodstuffs.js <newworld|paknsave> <分类URL> [--all]');
+    console.error('Usage: node scrapeFoodstuffs.js <newworld|paknsave> <categoryURL> [--all]');
     process.exit(1);
   }
 
@@ -464,12 +464,12 @@ if (require.main === module) {
 
   task
       .then((products) => {
-        console.log(`\n共抓到 ${products.length} 个商品\n`);
+        console.log(`\nScraped ${products.length} products in total\n`);
         console.log(JSON.stringify(products.slice(0, 5), null, 2));
-        console.log(products.length > 5 ? `\n...还有 ${products.length - 5} 个，已省略` : '');
+        console.log(products.length > 5 ? `\n...${products.length - 5} more omitted` : '');
       })
       .catch((err) => {
-        console.error('抓取失败:', err.message);
+        console.error('Scrape failed:', err.message);
         process.exit(1);
       });
 }
@@ -484,7 +484,7 @@ if (require.main === module) {
 async function scrapeMultipleCategories(chainKey, categoryUrls, useAllPages = true) {
   const all = [];
   for (const { url, label } of categoryUrls) {
-    console.log(`\n===== 开始抓分类: ${label || '(未命名)'} - ${url} =====`);
+    console.log(`\n===== Scraping category: ${label || '(unnamed)'} - ${url} =====`);
     const products = useAllPages
         ? await scrapeAllPages(chainKey, url, 50, label)
         : await scrapeCategoryPage(chainKey, url, label);

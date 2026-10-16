@@ -114,35 +114,35 @@ async function backfillFile(filePath) {
 async function main() {
   const fileArg = process.argv[2];
   if (!fileArg) {
-    console.error('用法: node backfillUnitPrice.js <json文件路径>');
+    console.error('Usage: node backfillUnitPrice.js <path to json file>');
     process.exit(1);
   }
 
   const filePath = path.resolve(fileArg);
   if (!fs.existsSync(filePath)) {
-    console.error(`找不到文件: ${filePath}`);
+    console.error(`File not found: ${filePath}`);
     process.exit(1);
   }
 
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri) {
-    console.error('没有找到 MONGODB_URI，检查一下项目根目录的 .env.local 文件');
+    console.error('MONGODB_URI not found; check the .env.local file in the project root');
     process.exit(1);
   }
 
-  console.log('连接数据库...');
+  console.log('Connecting to database...');
   await mongoose.connect(mongoUri);
-  console.log('数据库已连接，开始本地推算 + 回填...\n');
+  console.log('Database connected, starting local derivation + backfill...\n');
 
   const result = await backfillFile(filePath);
 
   console.log('\n========================================');
-  console.log(`文件: ${fileArg}`);
-  console.log(`总数据: ${result.total} 条`);
-  console.log(`成功回填 unitPrice: ${result.updated} 条`);
-  console.log(`跳过(已有unitPrice，不覆盖): ${result.skippedAlreadyHasUnitPrice} 条`);
+  console.log(`File: ${fileArg}`);
+  console.log(`Total records: ${result.total}`);
+  console.log(`unitPrice backfilled: ${result.updated}`);
+  console.log(`Skipped (already has unitPrice, not overwritten): ${result.skippedAlreadyHasUnitPrice}`);
   if (result.skippedNoName > 0) {
-    console.log(`跳过(没有商品名): ${result.skippedNoName} 条`);
+    console.log(`Skipped (no product name): ${result.skippedNoName}`);
   }
   console.log('========================================');
 
@@ -152,7 +152,7 @@ async function main() {
 // 命令行直接跑：node backfillUnitPrice.js <json文件路径>
 if (require.main === module) {
   main().catch((err) => {
-    console.error('回填失败:', err.message);
+    console.error('Backfill failed:', err.message);
     process.exit(1);
   });
 }
