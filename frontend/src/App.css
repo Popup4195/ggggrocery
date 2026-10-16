@@ -869,6 +869,13 @@
 }
 
 .results-section { display: grid; gap: 26px; scroll-margin-top: 20px; }
+.results-page-header { display: grid; gap: 16px; }
+.results-navigation { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.back-to-planning { gap: 8px; }
+.results-brand { color: var(--ink); font-size: 1.05rem; font-weight: 800; letter-spacing: -.04em; }
+.results-brand span { color: var(--primary); }
+.results-page-header .results-heading-row { gap: 12px; }
+.app-title:focus-visible, .results-title:focus-visible { outline: 3px solid rgba(21,148,71,.22); outline-offset: 4px; border-radius: 4px; }
 .results-heading-row { align-items: flex-end; padding-inline: 4px; }
 .results-heading-row .eyebrow { margin-bottom: 8px; }
 .results-title { margin-bottom: 6px; color: var(--ink); font-size: 1.9rem; font-weight: 780; letter-spacing: -.04em; }
@@ -1156,6 +1163,6 @@
 
 @media print {
   .app-shell { width: 100%; padding: 0; }
-  .app-header, .planner-grid, .generate-area, .export-toolbar, .comparison-disclosure > summary, .alternative-details > summary, .plan-details > summary { display: none !important; }
+  .app-header, .planner-grid, .generate-area, .results-navigation, .export-toolbar, .comparison-disclosure > summary, .alternative-details > summary, .plan-details > summary { display: none !important; }
   .recommended-card, .alternatives-section, .comparison-disclosure { box-shadow: none; }
 }
