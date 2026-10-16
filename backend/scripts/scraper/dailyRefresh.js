@@ -53,7 +53,7 @@ function trackHttpStatuses(statusCounts) {
 // { 403: 7, 200: 2 } -> "200 x2, 403 x7"
 function formatStatusCounts(counts) {
   const entries = Object.entries(counts || {});
-  if (entries.length === 0) return '无请求记录';
+  if (entries.length === 0) return 'no requests recorded';
   return entries
     .sort(([a], [b]) => String(a).localeCompare(String(b)))
     .map(([status, n]) => `${status} x${n}`)
@@ -64,18 +64,18 @@ function formatStatusCounts(counts) {
  * 跑完一个牌子的完整流程：抓取 -> 导入数据库 -> 补 unitPrice
  */
 async function refreshChain(chainKey) {
-  console.log(`\n########## 开始刷新: ${chainKey} ##########`);
+  console.log(`\n########## Refresh started: ${chainKey} ##########`);
 
   const { outFile, count } = await runBatchForChain(chainKey);
-  console.log(`[${chainKey}] 抓取完成，共 ${count} 个商品`);
+  console.log(`[${chainKey}] Scrape finished: ${count} products`);
 
   const importResult = await importFile(outFile);
   console.log(
-    `[${chainKey}] 导入完成，新建 ${importResult.created} / 更新 ${importResult.updated}`
+    `[${chainKey}] Import finished: ${importResult.created} created / ${importResult.updated} updated`
   );
 
   const backfillResult = await backfillFile(outFile);
-  console.log(`[${chainKey}] unitPrice 回填完成，补上 ${backfillResult.updated} 条`);
+  console.log(`[${chainKey}] unitPrice backfill finished: ${backfillResult.updated} records filled`);
 
   return { chainKey, count, importResult, backfillResult };
 }
@@ -86,15 +86,15 @@ async function refreshChain(chainKey) {
  */
 async function runDailyRefresh() {
   const startedAt = new Date();
-  console.log(`===== 每日刷新开始: ${startedAt.toISOString()} =====`);
+  console.log(`===== Daily refresh started: ${startedAt.toISOString()} =====`);
 
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri) {
-    throw new Error('没有找到 MONGODB_URI，检查一下项目根目录的 .env.local 文件');
+    throw new Error('MONGODB_URI not found; check the .env.local file in the project root');
   }
 
   await mongoose.connect(mongoUri);
-  console.log('数据库已连接');
+  console.log('Database connected');
 
   const results = [];
   const chains = ['paknsave', 'newworld'];
@@ -108,22 +108,22 @@ async function runDailyRefresh() {
       results.push(result);
       if (result.count === 0) {
         // 网站返回拦截页（比如 Cloudflare 403）时，抓取不会报错，只是一个商品都抓不到
-        console.error(`[${chains[i]}] 错误: 抓到 0 个商品，可能被网站拒绝`);
+        console.error(`[${chains[i]}] ERROR: 0 products scraped, the site may be rejecting requests`);
       }
     } catch (err) {
       // 一个牌子失败不影响另一个牌子继续跑，把错误记下来就好，
       // 不要让整个每日刷新因为其中一个牌子出问题就整体中断
-      console.error(`[${chains[i]}] 刷新失败: ${err.message}`);
+      console.error(`[${chains[i]}] Refresh failed: ${err.message}`);
       results.push({ chainKey: chains[i], error: err.message });
     }
-    console.log(`[${chains[i]}] HTTP 状态码: ${formatStatusCounts(statusCounts[chains[i]])}`);
+    console.log(`[${chains[i]}] HTTP status codes: ${formatStatusCounts(statusCounts[chains[i]])}`);
     statusTracker.setChain(null);
 
     // 换牌子之间歇久一点（2-5分钟），跟换分类的间隔（几秒钟级别）不是一个量级，
     // 因为这是"整个牌子跑完"之后的休息，不是翻页之间的休息
     if (i < chains.length - 1) {
       const waitMinutes = 2 + Math.random() * 3;
-      console.log(`\n换牌子前先歇约 ${waitMinutes.toFixed(1)} 分钟...`);
+      console.log(`\nWaiting about ${waitMinutes.toFixed(1)} minutes before the next chain...`);
       await new Promise((resolve) => setTimeout(resolve, waitMinutes * 60000));
     }
   }
@@ -133,21 +133,21 @@ async function runDailyRefresh() {
 
   const finishedAt = new Date();
   const durationMin = ((finishedAt - startedAt) / 60000).toFixed(1);
-  console.log(`\n===== 每日刷新结束: ${finishedAt.toISOString()} (耗时约 ${durationMin} 分钟) =====`);
+  console.log(`\n===== Daily refresh finished: ${finishedAt.toISOString()} (took about ${durationMin} minutes) =====`);
 
   // 汇总：每个牌子的商品数 + 状态码分布，一行看完
   const summary = results
     .map((r) => {
-      const countText = r.error ? `失败(${r.error})` : `${r.count} 个商品`;
+      const countText = r.error ? `failed (${r.error})` : `${r.count} products`;
       return `${r.chainKey}: ${countText} [${formatStatusCounts(statusCounts[r.chainKey])}]`;
     })
     .join(' | ');
-  console.log(`汇总: ${summary}`);
+  console.log(`Summary: ${summary}`);
 
   // 有牌子抓到 0 个商品（或整个牌子刷新失败）时，以非零退出码结束，让定时任务能看出来失败了
   const failedChains = results.filter((r) => r.error || r.count === 0).map((r) => r.chainKey);
   if (failedChains.length > 0) {
-    console.error(`每日刷新有失败的牌子: ${failedChains.join(', ')}，退出码设为 1`);
+    console.error(`Daily refresh has failed chains: ${failedChains.join(', ')}; setting exit code to 1`);
     process.exitCode = 1;
   }
 
@@ -157,7 +157,7 @@ async function runDailyRefresh() {
 // 命令行直接跑：node dailyRefresh.js
 if (require.main === module) {
   runDailyRefresh().catch((err) => {
-    console.error('每日刷新失败:', err.message);
+    console.error('Daily refresh failed:', err.message);
     process.exit(1);
   });
 }
