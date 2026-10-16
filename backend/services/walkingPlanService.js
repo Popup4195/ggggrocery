@@ -11,6 +11,7 @@ const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
 const { filterBranchesBySelection } = require('./branchSelection');
+const { comparePlans } = require('./planRanking');
 // 复用 planService.js 也在用的同一套匹配逻辑（整词匹配 + 品类优先级 +
 // "一模一样优先"），而不是之前那种精确匹配（$in），否则用户打的宽松词
 // （比如 "bread"）在这里永远查不到东西，因为库里存的是具体商品名
@@ -188,7 +189,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                 });
             } else {
                 hasMissing = true;  // 查不到价格，标记一下
-                missingAtThisStore.push(item.name);
+                missingAtThisStore.push(item.confirmedName || item.name);
             }
         }
 
@@ -324,7 +325,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
                 );
                 const missingAtThisSplit = items
                     .filter(item => !includedNames.has(item.name.toLowerCase()))
-                    .map(item => item.name);
+                    .map(item => item.confirmedName || item.name);
 
                 // 步行路线: 家 → 近的那个 → 远的那个 → 家
                 // 按距离排序，先近后远
@@ -407,8 +408,8 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
 
     // ==================== PHASE 4: 排序 + 返回 ====================
 
-    // 按总价从低到高排
-    allPlans.sort((a, b) => a.groceryTotal - b.groceryTotal);
+    // 先按缺失商品数从少到多，再按总价从低到高排
+    allPlans.sort(comparePlans('groceryTotal'));
 
     // 去重，一样的方案只保留一个（相同 strategy + chain 组合 + 总价）
     const uniquePlans = [];

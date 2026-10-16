@@ -15,6 +15,7 @@ const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
 const { filterBranchesBySelection } = require('./branchSelection');
+const { comparePlans, initialUpperBound } = require('./planRanking');
 const { getGroceryTotal } = require('./trueCostService');
 const { buildNameOrConditions, findCandidates, pickBestMatch, mergeConfirmedCandidates } = require('./productNameMatch');
 
@@ -467,7 +468,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, 
                     imageUrl: imageUrlMap[chainId]?.[name] || null
                 });
             } else {
-                missingAtThisStore.push(item.name);
+                missingAtThisStore.push(item.confirmedName || item.name);
             }
         }
 
@@ -519,11 +520,11 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, 
         };
 
         allPlans.push(plan);
-
-        if (trueCost < upperBound) {
-            upperBound = trueCost;
-        }
     }
+
+    // 上界只能来自买得全的单店方案：缺商品的单店方案"少买了东西"所以偏便宜，
+    // 拿它当上界会把能买全的多店方案剪掉
+    upperBound = initialUpperBound(allPlans, availableItems.length);
 
     // ==================== PHASE 3: Branch and Bound search ====================
 
@@ -716,8 +717,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, 
         }
     }
 
-    // sort by true cost (cheapest first)
-    uniquePlans.sort((a, b) => a.trueCost - b.trueCost);
+    // sort by missing items first (fewest first), then by true cost (cheapest first)
+    uniquePlans.sort(comparePlans('trueCost'));
 
     // assign ranks
     uniquePlans.forEach((plan, index) => {
