@@ -648,8 +648,12 @@ function App() {
   )
 
   const bestPlan = plans[0]
-  const savings = plans.length > 1
-      ? plans[plans.length - 1].trueCost - plans[0].trueCost
+  // compare only against plans as complete as the recommended one
+  // (items with no price at any store don't count as missing)
+  const missingCount = p => (p.missingItems || []).filter(n => !(p.globallyUnavailableItems || []).includes(n)).length
+  const comparablePlans = bestPlan ? plans.filter(p => missingCount(p) === missingCount(bestPlan)) : []
+  const savings = comparablePlans.length > 1
+      ? Math.max(...comparablePlans.map(p => p.trueCost)) - bestPlan.trueCost
       : 0
 
   // ================================================================
@@ -1056,7 +1060,7 @@ function App() {
                         {plans.length > 1 ? 'Recommended · Best plan' : 'Your plan'}
                       </span>
                       <h3 className="recommended-title">{getStrategyLabel(bestPlan)}</h3>
-                      {plans.length > 1 && (
+                      {savings > 0 && (
                           <p className="savings-copy">
                             Save ${savings.toFixed(2)} compared with the most expensive option.
                           </p>
