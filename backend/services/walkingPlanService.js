@@ -15,7 +15,7 @@ const { filterBranchesBySelection } = require('./branchSelection');
 // "一模一样优先"），而不是之前那种精确匹配（$in），否则用户打的宽松词
 // （比如 "bread"）在这里永远查不到东西，因为库里存的是具体商品名
 // （比如 "Vogel's Bread 700g"），根本不会完全相等。
-const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
+const { buildNameOrConditions, pickBestMatch, mergeConfirmedCandidates } = require('./productNameMatch');
 
 // 默认步行上限（公里），用户可以在 slider 里调
 const DEFAULT_WALKING_MAX_KM = 2.0;
@@ -120,7 +120,8 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
 
     // 一次性预取所有"可能相关"的候选记录（宽松的 $or regex，不是精确匹配），
     // 真正判断"算不算命中"交给 findCandidates 做整词匹配。
-    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    // 用户从下拉框选中的具体商品名（confirmedName）也参与预取，否则 "cabb" 这种半截词查不到它
+    const orConditions = buildNameOrConditions(items.flatMap(item => item.confirmedName ? [item.name, item.confirmedName] : [item.name]));
     const priceDocs = orConditions.length > 0
         ? await PriceSnapshot.find({
             $or: orConditions,
@@ -131,7 +132,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
     for (const chainId of availableChains) {
         for (const item of items) {
             const name = item.name.toLowerCase().trim();
-            const candidates = findCandidates(priceDocs, item.name, chainId);
+            const candidates = mergeConfirmedCandidates(priceDocs, item.name, chainId, item.confirmedName);
             const best = pickBestMatch(candidates, item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null) {
                 priceMap[chainId][name] = best.unitPrice;
@@ -153,7 +154,7 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
             const price = priceMap[chainId]?.[name];
             return price !== undefined && price !== null;
         });
-        if (!foundAnywhere) unavailableItems.push(item.name);
+        if (!foundAnywhere) unavailableItems.push(item.confirmedName || item.name);
     }
 
     // ==================== PHASE 3: 生成方案 ====================

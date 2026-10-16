@@ -16,7 +16,7 @@ const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
 const { filterBranchesBySelection } = require('./branchSelection');
 const { getGroceryTotal } = require('./trueCostService');
-const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
+const { buildNameOrConditions, findCandidates, pickBestMatch, mergeConfirmedCandidates } = require('./productNameMatch');
 
 // 默认值，跟 fr17 保持一致
 const DEFAULT_FUEL_EFFICIENCY = 10; // km/L, 新西兰平均油耗
@@ -291,7 +291,7 @@ function getPermutations(arr) {
 async function getCheapestPrices(items, supermarkets) {
     // 用包含匹配而不是精确匹配（跟主函数 generatePlans 里的逻辑保持一致，
     // 避免这个函数以后被重新启用时又踩一遍"爬虫具体商品名 vs 用户简单输入"匹配不上的坑）
-    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    const orConditions = buildNameOrConditions(items.flatMap(item => item.confirmedName ? [item.name, item.confirmedName] : [item.name]));
     const priceDocs = orConditions.length > 0
         ? await PriceSnapshot.find({ $or: orConditions, chainId: { $in: supermarkets } }).lean()
         : [];
@@ -301,7 +301,7 @@ async function getCheapestPrices(items, supermarkets) {
         const name = item.name.toLowerCase().trim();
         let cheapest = Infinity;
         for (const chainId of supermarkets) {
-            const best = pickBestMatch(findCandidates(priceDocs, item.name, chainId), item.name, item.category, item.confirmedName);
+            const best = pickBestMatch(mergeConfirmedCandidates(priceDocs, item.name, chainId, item.confirmedName), item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null && best.unitPrice < cheapest) {
                 cheapest = best.unitPrice;
             }
@@ -370,7 +370,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, 
         imageUrlMap[chainId] = {};
     }
 
-    const orConditions = buildNameOrConditions(items.map(item => item.name));
+    // 用户从下拉框选中的具体商品名（confirmedName）也参与预取，否则 "cabb" 这种半截词查不到它
+    const orConditions = buildNameOrConditions(items.flatMap(item => item.confirmedName ? [item.name, item.confirmedName] : [item.name]));
     const allPrices = orConditions.length > 0
         ? await PriceSnapshot.find({
             $or: orConditions,
@@ -381,7 +382,7 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, 
     for (const item of items) {
         const name = item.name.toLowerCase().trim();
         for (const chainId of availableChains) {
-            const best = pickBestMatch(findCandidates(allPrices, item.name, chainId), item.name, item.category, item.confirmedName);
+            const best = pickBestMatch(mergeConfirmedCandidates(allPrices, item.name, chainId, item.confirmedName), item.name, item.category, item.confirmedName);
             if (best && best.unitPrice !== null) {
                 priceMap[chainId][name] = best.unitPrice;
                 matchedNameMap[chainId][name] = best.productName;
@@ -417,7 +418,8 @@ async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, 
             cheapestPrices[name] = cheapest;
             availableItems.push(item);
         } else {
-            unavailableItems.push(item.name);
+            // 显示用户选中的具体商品名，而不是 "cabb" 这种半截词
+            unavailableItems.push(item.confirmedName || item.name);
         }
     }
 
