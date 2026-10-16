@@ -7,6 +7,7 @@ const { getPricesForItems, getAllProducts } = require('./services/priceService')
 const { calculateTrueCost } = require('./services/trueCostService');
 const { generatePlans } = require('./services/planService');
 const { generateWalkingPlans } = require('./services/walkingPlanService');
+const { validateBranchIds } = require('./services/branchSelection');
 
 
 // Load environment variables from root .env.local
@@ -126,7 +127,8 @@ app.post('/api/true-cost', async (req, res) => {
 // 返回: 按总价排序的方案列表
 
 app.post('/api/plans', async (req, res) => {
-    const { items, supermarkets, transportMode, fuelType, userLat, userLng, walkingMaxKm } = req.body;
+    const { items, transportMode, fuelType, userLat, userLng, walkingMaxKm, branchIds } = req.body;
+    let { supermarkets } = req.body;
 
     // basic validation — make sure all required fields are present
 
@@ -140,9 +142,38 @@ app.post('/api/plans', async (req, res) => {
         return res.status(400).json({ error: 'Please provide your location (latitude and longitude).' });
     }
 
+    // optional manual branch selection (max 7 across all chains)
+    if (branchIds !== undefined) {
+        const branchIdsError = validateBranchIds(branchIds);
+        if (branchIdsError) {
+            return res.status(400).json({ error: branchIdsError });
+        }
+    }
+
     const mode = transportMode || 'driving';
 
     try {
+        let allowedBranchIds;
+        if (branchIds && branchIds.length > 0) {
+            const selectedBranches = await Branch.find({
+                branchId: { $in: branchIds },
+                type: 'supermarket',
+                isActive: true
+            }).lean();
+            const foundIds = new Set(selectedBranches.map(b => b.branchId));
+            const unknownIds = branchIds.filter(id => !foundIds.has(id));
+            if (unknownIds.length > 0) {
+                return res.status(400).json({ error: `Unknown branch IDs: ${unknownIds.join(', ')}` });
+            }
+            // only plan with chains that have at least one ticked branch
+            const selectedChainIds = new Set(selectedBranches.map(b => b.chainId));
+            supermarkets = supermarkets.filter(chainId => selectedChainIds.has(chainId));
+            if (supermarkets.length === 0) {
+                return res.status(400).json({ error: 'None of the selected branches belong to the selected supermarkets.' });
+            }
+            allowedBranchIds = selectedBranches.map(b => b.branchId);
+        }
+
         if (mode === 'walking') {
             // walking mode: call walkingPlanService
 
@@ -151,7 +182,8 @@ app.post('/api/plans', async (req, res) => {
                 supermarkets,
                 userLat: parseFloat(userLat),
                 userLng: parseFloat(userLng),
-                walkingMaxKm: walkingMaxKm || 2.0
+                walkingMaxKm: walkingMaxKm || 2.0,
+                allowedBranchIds
             });
             if (result.message) {
                 // no walkable supermarkets found
@@ -166,7 +198,8 @@ app.post('/api/plans', async (req, res) => {
                 supermarkets,
                 fuelType: fuelType || '91',
                 userLat: parseFloat(userLat),
-                userLng: parseFloat(userLng)
+                userLng: parseFloat(userLng),
+                allowedBranchIds
             });
             res.json({ plans: result.plans, message: null, globallyUnavailableItems: result.globallyUnavailableItems || [] });
         }

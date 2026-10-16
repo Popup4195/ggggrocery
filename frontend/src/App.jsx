@@ -28,6 +28,8 @@ function App() {
   const [chains, setChains] = useState([])
   const [selectedChains, setSelectedChains] = useState([])
   const [branchesByChain, setBranchesByChain] = useState({})
+  // optional manual branch selection, max 7 across all chains (not saved in shared lists)
+  const [selectedBranchIds, setSelectedBranchIds] = useState([])
   const [productCatalog, setProductCatalog] = useState([])
 
   // ========== FR-S1: shareable list links (guest mode) ==========
@@ -143,6 +145,28 @@ function App() {
       }
     }
     setSelectedChains(newSelected)
+  }
+
+  // ========== Branch selection ==========
+  const MAX_SELECTED_BRANCHES = 7
+
+  // when a chain is unticked (by the user or a shared-list sync), drop its ticked branches
+  useEffect(() => {
+    const allowed = new Set(
+        selectedChains.flatMap(chainId => (branchesByChain[chainId] || []).map(b => b.branchId))
+    )
+    setSelectedBranchIds(prev => {
+      const next = prev.filter(id => allowed.has(id))
+      return next.length === prev.length ? prev : next
+    })
+  }, [selectedChains, branchesByChain])
+
+  const handleBranchToggle = (branchId) => {
+    setSelectedBranchIds(prev => {
+      if (prev.includes(branchId)) return prev.filter(id => id !== branchId)
+      if (prev.length >= MAX_SELECTED_BRANCHES) return prev
+      return [...prev, branchId]
+    })
   }
 
   // ========== Grocery helpers ==========
@@ -424,6 +448,11 @@ function App() {
         transportMode: transportMode,
         userLat: parseFloat(userLat),
         userLng: parseFloat(userLng)
+      }
+
+      // only send branchIds when the user ticked at least one branch
+      if (selectedBranchIds.length > 0) {
+        body.branchIds = selectedBranchIds
       }
 
       // only include fuelType in driving mode
@@ -807,6 +836,25 @@ function App() {
                     <p className="panel-description">Loading supermarkets…</p>
                 ) : (
                     <div className="supermarket-list">
+                      <div className="branch-selection-bar">
+                        <p className="field-help">
+                          Optional. Tick up to 7 branches. For each chain, the nearest ticked branch is used. If none are ticked, the nearest branch of each selected chain is used.
+                        </p>
+                        <div className="branch-selection-status">
+                          <span className="selection-count">{selectedBranchIds.length}/{MAX_SELECTED_BRANCHES} selected</span>
+                          <button
+                              type="button"
+                              className="branch-clear-button"
+                              onClick={() => setSelectedBranchIds([])}
+                              disabled={selectedBranchIds.length === 0}
+                          >
+                            Clear
+                          </button>
+                          {selectedBranchIds.length >= MAX_SELECTED_BRANCHES && (
+                              <span className="branch-limit-note">Maximum 7 branches</span>
+                          )}
+                        </div>
+                      </div>
                       {chains.map(chain => (
                           <div className="supermarket-block" key={chain.chainId}>
                             <label className={`supermarket-option${selectedChains.includes(chain.chainId) ? ' selected' : ''}`}>
@@ -825,12 +873,26 @@ function App() {
                                     {branchesByChain[chain.chainId].length} available branches
                                   </summary>
                                   <ul className="branch-list">
-                                    {branchesByChain[chain.chainId].map(branch => (
+                                    {branchesByChain[chain.chainId].map(branch => {
+                                      const ticked = selectedBranchIds.includes(branch.branchId)
+                                      const full = !ticked && selectedBranchIds.length >= MAX_SELECTED_BRANCHES
+                                      return (
                                         <li key={branch.branchId}>
-                                          {branch.name}
-                                          <span className="branch-address">{branch.address}</span>
+                                          <label className={`branch-option${full ? ' disabled' : ''}`}>
+                                            <input
+                                                type="checkbox"
+                                                checked={ticked}
+                                                disabled={full}
+                                                onChange={() => handleBranchToggle(branch.branchId)}
+                                            />
+                                            <span>
+                                              {branch.name}
+                                              <span className="branch-address">{branch.address}</span>
+                                            </span>
+                                          </label>
                                         </li>
-                                    ))}
+                                      )
+                                    })}
                                   </ul>
                                 </details>
                             )}

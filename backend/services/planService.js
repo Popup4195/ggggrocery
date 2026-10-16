@@ -14,6 +14,7 @@
 const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
+const { filterBranchesBySelection } = require('./branchSelection');
 const { getGroceryTotal } = require('./trueCostService');
 const { buildNameOrConditions, findCandidates, pickBestMatch } = require('./productNameMatch');
 
@@ -26,16 +27,17 @@ const DEFAULT_FUEL_PRICE = 2.80;    // 如果数据库里没加油站数据就�
 // 同一品牌在不同分店的价格是一样的
 // 所以我们选最近的那家，省得开车跑远路
 // ================================================================
-async function findNearestBranches(supermarkets, userLat, userLng) {
+async function findNearestBranches(supermarkets, userLat, userLng, allowedBranchIds) {
     // supermarkets 就是用户选的品牌列表，比如 ['paknsave', 'newworld', 'countdown']
+    // allowedBranchIds 可选：用户手动勾选的分店，只在这些分店里找最近的；不传就是所有分店
     const nearestBranches = {};
 
     for (const chainId of supermarkets) {
-        const branches = await Branch.find({
+        const branches = filterBranchesBySelection(await Branch.find({
             chainId: chainId,
             type: 'supermarket',
             isActive: true
-        });
+        }), allowedBranchIds);
 
         if (branches.length === 0) continue;
 
@@ -335,11 +337,11 @@ async function getItemPrice(itemName, chainId) {
 // 4. 递归尝试所有分配方案，把不可能比上界好的分支剪掉
 // 5. 返回前 10 个方案，按真实成本排序
 // ================================================================
-async function generatePlans({ items, supermarkets, userLat, userLng, fuelType }) {
+async function generatePlans({ items, supermarkets, userLat, userLng, fuelType, allowedBranchIds }) {
     // ==================== 第一阶段：预加载数据 ====================
 
-    // 第1步: 找每个超市连锁离用户最近的分店
-    const nearestBranches = await findNearestBranches(supermarkets, userLat, userLng);
+    // 第1步: 找每个超市连锁离用户最近的分店（如果用户勾选了分店，只在勾选的里面找）
+    const nearestBranches = await findNearestBranches(supermarkets, userLat, userLng, allowedBranchIds);
 
     // 只保留有分店的品牌
     const availableChains = Object.keys(nearestBranches);

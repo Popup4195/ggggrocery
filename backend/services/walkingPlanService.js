@@ -10,6 +10,7 @@
 const Branch = require('../models/Branch');
 const PriceSnapshot = require('../models/PriceSnapshot');
 const { getDistances } = require('./distanceService');
+const { filterBranchesBySelection } = require('./branchSelection');
 // 复用 planService.js 也在用的同一套匹配逻辑（整词匹配 + 品类优先级 +
 // "一模一样优先"），而不是之前那种精确匹配（$in），否则用户打的宽松词
 // （比如 "bread"）在这里永远查不到东西，因为库里存的是具体商品名
@@ -37,8 +38,9 @@ function estimateWalkingTime(distanceKm) {
 //   supermarkets: [chainId, ...]
 //   userLat, userLng: 用户坐标
 //   walkingMaxKm: 步行上限，默认 2km
+//   allowedBranchIds: 可选，用户手动勾选的分店；不传就是该品牌所有分店
 // ================================================================
-async function generateWalkingPlans({ items, supermarkets, userLat, userLng, walkingMaxKm }) {
+async function generateWalkingPlans({ items, supermarkets, userLat, userLng, walkingMaxKm, allowedBranchIds }) {
     const maxKm = walkingMaxKm || DEFAULT_WALKING_MAX_KM;
 
     // ==================== PHASE 1: 找步行可达的分店 ====================
@@ -47,11 +49,11 @@ async function generateWalkingPlans({ items, supermarkets, userLat, userLng, wal
     const reachableBranches = {};  // chainId -> { branchInfo, distance }
 
     for (const chainId of supermarkets) {
-        const branches = await Branch.find({
+        const branches = filterBranchesBySelection(await Branch.find({
             chainId: chainId,
             type: 'supermarket',
             isActive: true
-        });
+        }), allowedBranchIds);
 
         if (branches.length === 0) continue;
 
